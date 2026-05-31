@@ -57,13 +57,13 @@ class NotificationService: NSObject {
     ///   - fallbackToDockBounce: Whether to fall back to dock icon bounce if notifications aren't authorized
     func notifyChatComplete(chatName: String?, fallbackToDockBounce: Bool = true) {
         // Only notify if app is not active
-        guard !NSApp.isActive else { return }
+        guard NSApp?.isActive != true else { return }
 
         if isAuthorized {
             sendChatCompleteNotification(chatName: chatName)
         } else if fallbackToDockBounce {
             // Fallback to dock icon bounce
-            NSApp.requestUserAttention(.informationalRequest)
+            NSApp?.requestUserAttention(.informationalRequest)
         }
     }
 
@@ -73,13 +73,13 @@ class NotificationService: NSObject {
     ///   - fallbackToDockBounce: Whether to fall back to dock icon bounce if notifications aren't authorized
     func notifyContextBuilderComplete(tabName: String, fallbackToDockBounce: Bool = true) {
         // Only notify if app is not active
-        guard !NSApp.isActive else { return }
+        guard NSApp?.isActive != true else { return }
 
         if isAuthorized {
             notifyContextBuilderCompleted(tabName: tabName)
         } else if fallbackToDockBounce {
             // Fallback to dock icon bounce
-            NSApp.requestUserAttention(.informationalRequest)
+            NSApp?.requestUserAttention(.informationalRequest)
         }
     }
 
@@ -95,12 +95,12 @@ class NotificationService: NSObject {
         route: AgentSessionDeepLinkRoute? = nil,
         fallbackToDockBounce: Bool = true
     ) {
-        guard !NSApp.isActive else { return }
+        guard NSApp?.isActive != true else { return }
 
         if isAuthorized {
             sendAgentTurnCompleteNotification(sessionName: sessionName, previewText: previewText, route: route)
         } else if fallbackToDockBounce {
-            NSApp.requestUserAttention(.informationalRequest)
+            NSApp?.requestUserAttention(.informationalRequest)
         }
     }
 
@@ -116,12 +116,12 @@ class NotificationService: NSObject {
         route: AgentSessionDeepLinkRoute? = nil,
         fallbackToDockBounce: Bool = true
     ) {
-        guard !NSApp.isActive else { return }
+        guard NSApp?.isActive != true else { return }
 
         if isAuthorized {
             sendAgentWaitingForUserNotification(sessionName: sessionName, promptText: promptText, route: route)
         } else if fallbackToDockBounce {
-            NSApp.requestUserAttention(.informationalRequest)
+            NSApp?.requestUserAttention(.informationalRequest)
         }
     }
 
