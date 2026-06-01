@@ -18,17 +18,56 @@ final class CodexNativeSessionControllerGoalConfigTests: XCTestCase {
             forceExperimentalSteering: false,
             approvalPolicyProvider: { .never },
             sandboxModeProvider: { .readOnly },
-            approvalReviewerProvider: { .user },
-            goalSupportEnabledProvider: { true },
-            computerUseEnabledProvider: { false }
+            approvalReviewerProvider: { .user }
         )
 
+        try await assertStartAndResumeGoalConfig(
+            options: options,
+            expectedGoalSupportEnabled: true
+        )
+    }
+
+    func testAgentModeDefaultCarriesExplicitGoalOptOutToStartAndResume() async throws {
+        let options = CodexNativeSessionController.Options.agentModeDefault(
+            forceExperimentalSteering: false,
+            approvalPolicyProvider: { .never },
+            sandboxModeProvider: { .readOnly },
+            approvalReviewerProvider: { .user },
+            goalSupportEnabledProvider: { false }
+        )
+
+        try await assertStartAndResumeGoalConfig(
+            options: options,
+            expectedGoalSupportEnabled: false
+        )
+    }
+
+    func testAgentModeDefaultCarriesExplicitGoalOptInToStartAndResume() async throws {
+        let options = CodexNativeSessionController.Options.agentModeDefault(
+            forceExperimentalSteering: false,
+            approvalPolicyProvider: { .never },
+            sandboxModeProvider: { .readOnly },
+            approvalReviewerProvider: { .user },
+            goalSupportEnabledProvider: { true }
+        )
+
+        try await assertStartAndResumeGoalConfig(
+            options: options,
+            expectedGoalSupportEnabled: true
+        )
+    }
+
+    private func assertStartAndResumeGoalConfig(
+        options: CodexNativeSessionController.Options,
+        expectedGoalSupportEnabled: Bool
+    ) async throws {
         let (startController, startRecordURL) = try await makeController(options: options)
         _ = try await startController.startOrResume(existing: nil, baseInstructions: "Agent")
         await startController.shutdown()
 
-        try assertGoalFeatureEnabledAndComputerUseDisabled(
+        try assertGoalFeatureAndComputerUseConfig(
             in: recordedParams(for: "thread/start", at: startRecordURL),
+            expectedGoalSupportEnabled: expectedGoalSupportEnabled,
             label: "thread/start"
         )
 
@@ -42,8 +81,9 @@ final class CodexNativeSessionControllerGoalConfigTests: XCTestCase {
         _ = try await resumeController.startOrResume(existing: existing, baseInstructions: "Agent")
         await resumeController.shutdown()
 
-        try assertGoalFeatureEnabledAndComputerUseDisabled(
+        try assertGoalFeatureAndComputerUseConfig(
             in: recordedParams(for: "thread/resume", at: resumeRecordURL),
+            expectedGoalSupportEnabled: expectedGoalSupportEnabled,
             label: "thread/resume"
         )
     }
@@ -129,12 +169,13 @@ final class CodexNativeSessionControllerGoalConfigTests: XCTestCase {
         return [:]
     }
 
-    private func assertGoalFeatureEnabledAndComputerUseDisabled(
+    private func assertGoalFeatureAndComputerUseConfig(
         in params: [String: Any],
+        expectedGoalSupportEnabled: Bool,
         label: String
     ) throws {
         let config = try XCTUnwrap(params["config"] as? [String: Any], label)
-        XCTAssertEqual(config["features.goals"] as? Bool, true, label)
+        XCTAssertEqual(config["features.goals"] as? Bool, expectedGoalSupportEnabled, label)
         XCTAssertEqual(config["features.computer_use"] as? Bool, false, label)
     }
 }
