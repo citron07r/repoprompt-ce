@@ -49,6 +49,60 @@ final class CodexNativeSessionControllerThreadStartTests: XCTestCase {
 
         let params = try recordedParams(for: "thread/resume", at: recordURL)
         XCTAssertNil(params["ephemeral"])
+        XCTAssertTrue(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
+    }
+
+    func testFreshEphemeralThreadSkipsMemoryModeMetadataWrite() async throws {
+        let (controller, recordURL) = try await makeController(options: makeStandardChatOptions(startNewThreadsEphemerally: true))
+
+        _ = try await controller.startOrResume(existing: nil, baseInstructions: "Oracle")
+        await controller.shutdown()
+
+        XCTAssertFalse(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
+    }
+
+    func testFreshNonEphemeralThreadDisablesMemoryMode() async throws {
+        let (controller, recordURL) = try await makeController(options: makeStandardChatOptions(startNewThreadsEphemerally: false))
+
+        _ = try await controller.startOrResume(existing: nil, baseInstructions: "Chat")
+        await controller.shutdown()
+
+        XCTAssertTrue(try recordedMethods(at: recordURL).contains("thread/memoryMode/set"))
+    }
+
+    func testAgentModeDefaultCarriesGoalFeatureConfigToStartAndResume() async throws {
+        let options = CodexNativeSessionController.Options.agentModeDefault(
+            forceExperimentalSteering: false,
+            approvalPolicyProvider: { .never },
+            sandboxModeProvider: { .readOnly },
+            approvalReviewerProvider: { .user },
+            goalSupportEnabledProvider: { true },
+            computerUseEnabledProvider: { false }
+        )
+
+        let (startController, startRecordURL) = try await makeController(options: options)
+        _ = try await startController.startOrResume(existing: nil, baseInstructions: "Agent")
+        await startController.shutdown()
+
+        try assertGoalFeatureEnabledAndComputerUseDisabled(
+            in: recordedParams(for: "thread/start", at: startRecordURL),
+            label: "thread/start"
+        )
+
+        let (resumeController, resumeRecordURL) = try await makeController(options: options)
+        let existing = CodexNativeSessionController.SessionRef(
+            conversationID: "existing-thread",
+            rolloutPath: nil,
+            model: nil,
+            reasoningEffort: nil
+        )
+        _ = try await resumeController.startOrResume(existing: existing, baseInstructions: "Agent")
+        await resumeController.shutdown()
+
+        try assertGoalFeatureEnabledAndComputerUseDisabled(
+            in: recordedParams(for: "thread/resume", at: resumeRecordURL),
+            label: "thread/resume"
+        )
     }
 
     private func makeStandardChatOptions(startNewThreadsEphemerally: Bool) -> CodexNativeSessionController.Options {
@@ -142,5 +196,24 @@ final class CodexNativeSessionControllerThreadStartTests: XCTestCase {
         }
         XCTFail("No \(method) request was recorded")
         return [:]
+    }
+
+    private func recordedMethods(at recordURL: URL) throws -> [String] {
+        let data = try Data(contentsOf: recordURL)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        return try text.split(whereSeparator: { $0.isNewline }).compactMap { line in
+            let lineData = try XCTUnwrap(String(line).data(using: .utf8))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: lineData) as? [String: Any])
+            return object["method"] as? String
+        }
+    }
+
+    private func assertGoalFeatureEnabledAndComputerUseDisabled(
+        in params: [String: Any],
+        label: String
+    ) throws {
+        let config = try XCTUnwrap(params["config"] as? [String: Any], label)
+        XCTAssertEqual(config["features.goals"] as? Bool, true, label)
+        XCTAssertEqual(config["features.computer_use"] as? Bool, false, label)
     }
 }
