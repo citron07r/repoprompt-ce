@@ -37,6 +37,7 @@ struct AgentStatusPillsRow: View {
     @ObservedObject var statusPillsUI: AgentStatusPillsUIStore
     @ObservedObject var oracleViewModel: OracleViewModel
     @ObservedObject var promptManager: PromptViewModel
+    let selectionCoordinator: WorkspaceSelectionCoordinator
     @ObservedObject var runtimeVM: AgentRuntimeSidebarViewModel
     let windowID: Int
 
@@ -100,7 +101,13 @@ struct AgentStatusPillsRow: View {
 
                 AgentContextPill(
                     promptManager: promptManager,
-                    runtimeVM: runtimeVM
+                    selectionCoordinator: selectionCoordinator,
+                    runtimeVM: runtimeVM,
+                    currentTabID: snapshot.currentTabID,
+                    activeAgentSessionID: snapshot.activeAgentSessionID,
+                    worktreeBindingsProvider: { sessionID, tabID in
+                        agentModeVM.worktreeBindings(forAgentSessionID: sessionID, tabID: tabID)
+                    }
                 )
             }
         }
@@ -876,7 +883,11 @@ struct AgentWorkflowPill: View {
 /// Expands upward into a popover with export controls.
 struct AgentContextPill: View {
     @ObservedObject var promptManager: PromptViewModel
+    let selectionCoordinator: WorkspaceSelectionCoordinator
     @ObservedObject var runtimeVM: AgentRuntimeSidebarViewModel
+    let currentTabID: UUID?
+    let activeAgentSessionID: UUID?
+    let worktreeBindingsProvider: @MainActor (UUID, UUID?) -> [AgentSessionWorktreeBinding]
 
     @State private var showPopover = false
     @ObservedObject private var fontScale = FontScaleManager.shared
@@ -993,8 +1004,12 @@ struct AgentContextPill: View {
             AgentExportCard(
                 promptManager: promptManager,
                 tokenCounter: promptManager.tokenCountingViewModel,
+                selectionCoordinator: selectionCoordinator,
                 fileCount: fileCount,
-                selectionTokens: selectionTokens
+                selectionTokens: selectionTokens,
+                currentTabID: currentTabID,
+                activeAgentSessionID: activeAgentSessionID,
+                worktreeBindingsProvider: worktreeBindingsProvider
             )
         }
         .padding(12)

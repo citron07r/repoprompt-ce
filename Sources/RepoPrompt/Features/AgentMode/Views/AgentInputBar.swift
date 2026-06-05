@@ -165,6 +165,7 @@ struct AgentInputBar: View {
             statusPillsUI: statusPillsUI,
             oracleViewModel: oracleViewModel,
             promptManager: promptManager,
+            selectionCoordinator: selectionCoordinator,
             runtimeVM: runtimeVM,
             windowID: windowID
         )

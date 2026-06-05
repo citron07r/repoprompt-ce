@@ -1337,43 +1337,10 @@ extension MCPServerViewModel {
         sessionID: UUID,
         bindings: [AgentSessionWorktreeBinding]
     ) async -> WorkspaceRootBindingProjection? {
-        let store = promptVM.workspaceFileContextStore
-        let visibleRoots = await store.rootRefs(scope: .visibleWorkspace)
-        var boundRoots: [WorkspaceRootBindingProjection.BoundRoot] = []
-        for binding in bindings {
-            let logicalPath = StandardizedPath.absolute((binding.logicalRootPath as NSString).expandingTildeInPath)
-            let logicalRoot = visibleRoots.first { $0.standardizedFullPath == logicalPath }
-                ?? WorkspaceRootRef(
-                    id: UUID(),
-                    name: binding.logicalRootName ?? URL(fileURLWithPath: logicalPath).lastPathComponent,
-                    fullPath: logicalPath
-                )
-            do {
-                let physicalRecord = try await store.loadRoot(
-                    path: binding.worktreeRootPath,
-                    kind: .sessionWorktree,
-                    respectGitignore: true,
-                    respectRepoIgnore: true,
-                    respectCursorignore: true
-                )
-                let physicalRoot = WorkspaceRootRef(
-                    id: physicalRecord.id,
-                    name: logicalRoot.name,
-                    fullPath: physicalRecord.standardizedFullPath
-                )
-                boundRoots.append(.init(logicalRoot: logicalRoot, physicalRoot: physicalRoot, binding: binding))
-            } catch {
-                selectionLog("Failed to materialize session worktree root for session=\(sessionID): \(error.localizedDescription)")
-                let physicalRoot = WorkspaceRootRef(
-                    id: UUID(),
-                    name: logicalRoot.name,
-                    fullPath: StandardizedPath.absolute((binding.worktreeRootPath as NSString).expandingTildeInPath)
-                )
-                boundRoots.append(.init(logicalRoot: logicalRoot, physicalRoot: physicalRoot, binding: binding))
-            }
-        }
-        guard !boundRoots.isEmpty else { return nil }
-        return WorkspaceRootBindingProjection(sessionID: sessionID, boundRoots: boundRoots, visibleLogicalRoots: visibleRoots)
+        await WorkspaceRootBindingProjectionMaterializer(store: promptVM.workspaceFileContextStore).materialize(
+            sessionID: sessionID,
+            bindings: bindings
+        )
     }
 
     static func resolveFileToolLookupRootScope(
