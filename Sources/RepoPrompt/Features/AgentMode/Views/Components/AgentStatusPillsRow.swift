@@ -912,16 +912,15 @@ struct AgentContextPill: View {
 
     private var currentExportSourceSelection: StoredSelection {
         let requestedTabID = currentTabID ?? promptManager.activeComposeTabID
-        let activeTabID = selectionCoordinator.activeTabID() ?? promptManager.activeComposeTabID
-        let activeSelectionSnapshot = requestedTabID == activeTabID
-            ? selectionCoordinator.activeSelectionSnapshot(flushPendingUI: false)
-            : nil
+        let selectionSnapshot = requestedTabID.flatMap {
+            selectionCoordinator.selectionSnapshot(for: $0, flushPendingUIIfActive: false)
+        }
         return AgentContextExportSourceBuilder.makeSource(
             AgentContextExportSourceBuildRequest(
                 requestedTabID: requestedTabID,
                 activeComposeTabID: promptManager.activeComposeTabID,
                 activePromptText: promptManager.promptText,
-                activeSelectionSnapshot: activeSelectionSnapshot,
+                selectionSnapshot: selectionSnapshot,
                 composeTabs: promptManager.currentComposeTabs,
                 explicitActiveAgentSessionID: activeAgentSessionID,
                 worktreeBindingsProvider: worktreeBindingsProvider

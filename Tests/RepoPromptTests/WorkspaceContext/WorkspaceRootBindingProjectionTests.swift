@@ -191,6 +191,43 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         XCTAssertEqual(child.standardizedRootPath, "/repo/project")
     }
 
+    func testSelectionCanPhysicalizeForLookupThenLogicalizeForPersistence() {
+        let logicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/repo/project")
+        let physicalRoot = WorkspaceRootRef(id: UUID(), name: "Project", fullPath: "/tmp/worktrees/project-agent")
+        let projection = WorkspaceRootBindingProjection(
+            sessionID: UUID(),
+            boundRoots: [
+                .init(
+                    logicalRoot: logicalRoot,
+                    physicalRoot: physicalRoot,
+                    binding: Self.binding(logicalRoot: logicalRoot, physicalRoot: physicalRoot, worktreeID: "wt-1")
+                )
+            ]
+        )
+        let logicalSelection = StoredSelection(
+            selectedPaths: ["Sources/App.swift"],
+            autoCodemapPaths: ["Sources/Dependency.swift"],
+            slices: ["Sources/Sliced.swift": [LineRange(start: 3, end: 9)]],
+            codemapAutoEnabled: false
+        )
+
+        let physicalSelection = projection.physicalizeSelection(logicalSelection)
+        XCTAssertEqual(physicalSelection.selectedPaths, ["/tmp/worktrees/project-agent/Sources/App.swift"])
+        XCTAssertEqual(physicalSelection.autoCodemapPaths, ["/tmp/worktrees/project-agent/Sources/Dependency.swift"])
+        XCTAssertEqual(
+            physicalSelection.slices["/tmp/worktrees/project-agent/Sources/Sliced.swift"],
+            [LineRange(start: 3, end: 9)]
+        )
+
+        let persistedSelection = projection.logicalizeSelection(physicalSelection)
+        XCTAssertEqual(persistedSelection.selectedPaths, ["/repo/project/Sources/App.swift"])
+        XCTAssertEqual(persistedSelection.autoCodemapPaths, ["/repo/project/Sources/Dependency.swift"])
+        XCTAssertEqual(
+            persistedSelection.slices["/repo/project/Sources/Sliced.swift"],
+            [LineRange(start: 3, end: 9)]
+        )
+    }
+
     private static func binding(
         logicalRoot: WorkspaceRootRef,
         physicalRoot: WorkspaceRootRef,

@@ -3036,7 +3036,7 @@ final class MCPServerViewModel: ObservableObject {
     }
 
     @MainActor
-    private func readFileAutoSelectionContext(
+    func readFileAutoSelectionContext(
         for key: MCPReadFileAutoSelectionCoordinator.ContextKey
     ) -> TabScopedContext? {
         switch key.route {

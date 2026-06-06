@@ -36,7 +36,7 @@ struct AgentContextExportSourceBuildRequest {
     let requestedTabID: UUID?
     let activeComposeTabID: UUID?
     let activePromptText: String
-    let activeSelectionSnapshot: WorkspaceSelectionCoordinator.Snapshot?
+    let selectionSnapshot: WorkspaceSelectionCoordinator.Snapshot?
     let composeTabs: [ComposeTabState]
     let explicitActiveAgentSessionID: UUID?
     let worktreeBindingsProvider: (UUID, UUID?) -> [AgentSessionWorktreeBinding]
@@ -45,14 +45,14 @@ struct AgentContextExportSourceBuildRequest {
 enum AgentContextExportSourceBuilder {
     static func makeSource(_ request: AgentContextExportSourceBuildRequest) -> AgentContextExportSource {
         let resolvedTabID = request.requestedTabID
-            ?? request.activeSelectionSnapshot?.tabID
+            ?? request.selectionSnapshot?.tabID
             ?? request.activeComposeTabID
         let tab = resolvedTabID.flatMap { tabID in
             request.composeTabs.first { $0.id == tabID }
         }
-        let activeSnapshotApplies = request.activeSelectionSnapshot?.tabID == resolvedTabID
-        let selection = activeSnapshotApplies
-            ? request.activeSelectionSnapshot?.selection ?? StoredSelection()
+        let selectionSnapshotApplies = request.selectionSnapshot?.tabID == resolvedTabID
+        let selection = selectionSnapshotApplies
+            ? request.selectionSnapshot?.selection ?? StoredSelection()
             : tab?.selection ?? StoredSelection()
         let promptText = resolvedTabID == request.activeComposeTabID
             ? request.activePromptText

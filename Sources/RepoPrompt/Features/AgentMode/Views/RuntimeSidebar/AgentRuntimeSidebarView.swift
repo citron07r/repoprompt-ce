@@ -572,16 +572,15 @@ struct AgentExportCard: View {
 
     private func makeExportSource(flushPendingUI: Bool = true) -> AgentContextExportSource {
         let requestedTabID = currentTabID ?? promptManager.activeComposeTabID
-        let activeTabID = selectionCoordinator?.activeTabID() ?? promptManager.activeComposeTabID
-        let activeSelectionSnapshot = requestedTabID == activeTabID
-            ? selectionCoordinator?.activeSelectionSnapshot(flushPendingUI: flushPendingUI)
-            : nil
+        let selectionSnapshot = requestedTabID.flatMap {
+            selectionCoordinator?.selectionSnapshot(for: $0, flushPendingUIIfActive: flushPendingUI)
+        }
         return AgentContextExportSourceBuilder.makeSource(
             AgentContextExportSourceBuildRequest(
                 requestedTabID: requestedTabID,
                 activeComposeTabID: promptManager.activeComposeTabID,
                 activePromptText: promptManager.promptText,
-                activeSelectionSnapshot: activeSelectionSnapshot,
+                selectionSnapshot: selectionSnapshot,
                 composeTabs: promptManager.currentComposeTabs,
                 explicitActiveAgentSessionID: activeAgentSessionID,
                 worktreeBindingsProvider: { sessionID, tabID in
@@ -721,8 +720,8 @@ struct AgentExportCard: View {
     @MainActor
     private func latestSelection(for source: AgentContextExportSource) -> StoredSelection {
         guard let tabID = source.tabID else { return source.selection }
-        if tabID == selectionCoordinator?.activeTabID() {
-            return selectionCoordinator?.activeSelectionSnapshot(flushPendingUI: true).selection ?? source.selection
+        if let snapshot = selectionCoordinator?.selectionSnapshot(for: tabID, flushPendingUIIfActive: true) {
+            return snapshot.selection
         }
         return promptManager.currentComposeTabs.first { $0.id == tabID }?.selection ?? source.selection
     }
@@ -730,10 +729,8 @@ struct AgentExportCard: View {
     @MainActor
     private func persistSelection(_ selection: StoredSelection, source: AgentContextExportSource) async {
         guard let selectionCoordinator else { return }
-        if source.tabID == selectionCoordinator.activeTabID() {
-            _ = await selectionCoordinator.persistActiveSelection(selection, source: .runtimeMutation)
-        } else if let tabID = source.tabID {
-            _ = selectionCoordinator.persistVirtualSelection(selection, for: tabID)
+        if let tabID = source.tabID {
+            _ = await selectionCoordinator.persistSelection(selection, for: tabID, source: .runtimeMutation)
         }
     }
 

@@ -281,7 +281,7 @@ final class AgentContextExportResolverTests: XCTestCase {
                 requestedTabID: requestedTabID,
                 activeComposeTabID: activeTabID,
                 activePromptText: "active live prompt",
-                activeSelectionSnapshot: activeSnapshot,
+                selectionSnapshot: activeSnapshot,
                 composeTabs: tabs,
                 explicitActiveAgentSessionID: nil,
                 worktreeBindingsProvider: { sessionID, tabID in
@@ -295,6 +295,54 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(source.promptText, "requested prompt")
         XCTAssertEqual(source.activeAgentSessionID, requestedSessionID)
         XCTAssertEqual(source.worktreeBindings, [requestedBinding])
+    }
+
+    @MainActor
+    func testSourceBuilderUsesRequestedTabSnapshotForInactiveAgentTab() {
+        let requestedTabID = UUID()
+        let activeTabID = UUID()
+        let staleStoredSelection = StoredSelection()
+        let coordinatorSelection = StoredSelection(
+            selectedPaths: ["Sources/Agent.swift", "Sources/Second.swift"],
+            codemapAutoEnabled: false
+        )
+        let activeSelection = StoredSelection()
+        let tabs = [
+            ComposeTabState(
+                id: requestedTabID,
+                name: "Requested",
+                selection: staleStoredSelection,
+                promptText: "requested prompt"
+            ),
+            ComposeTabState(
+                id: activeTabID,
+                name: "Active",
+                selection: activeSelection,
+                promptText: "active stored prompt"
+            )
+        ]
+        let requestedSnapshot = WorkspaceSelectionCoordinator.Snapshot(
+            tabID: requestedTabID,
+            selection: coordinatorSelection,
+            isVirtual: true
+        )
+
+        let source = AgentContextExportSourceBuilder.makeSource(
+            AgentContextExportSourceBuildRequest(
+                requestedTabID: requestedTabID,
+                activeComposeTabID: activeTabID,
+                activePromptText: "active live prompt",
+                selectionSnapshot: requestedSnapshot,
+                composeTabs: tabs,
+                explicitActiveAgentSessionID: nil,
+                worktreeBindingsProvider: { _, _ in [] }
+            )
+        )
+
+        XCTAssertEqual(source.tabID, requestedTabID)
+        XCTAssertEqual(source.selection, coordinatorSelection)
+        XCTAssertEqual(AgentContextExportResolver.selectionFileCount(source.selection), 2)
+        XCTAssertEqual(source.promptText, "requested prompt")
     }
 
     @MainActor
@@ -323,7 +371,7 @@ final class AgentContextExportResolverTests: XCTestCase {
                 requestedTabID: activeTabID,
                 activeComposeTabID: activeTabID,
                 activePromptText: "active live prompt",
-                activeSelectionSnapshot: activeSnapshot,
+                selectionSnapshot: activeSnapshot,
                 composeTabs: tabs,
                 explicitActiveAgentSessionID: nil,
                 worktreeBindingsProvider: { _, _ in [] }

@@ -172,10 +172,10 @@ struct AgentModeDetailWithSidebarView: View {
                 syncContextBuilderQuestionPresentation()
             }
             .onReceive(promptManager.fileManager.$selectedFiles.map(\.count).removeDuplicates()) { _ in
-                syncRuntimeMetricsSelectionCount()
+                syncRuntimeMetricsSelectionCountFromActiveUIIfCurrent()
             }
-            .onReceive(selectionCoordinator.changes) { _ in
-                syncRuntimeMetricsSelectionCount()
+            .onReceive(selectionCoordinator.changes) { change in
+                syncRuntimeMetricsSelectionCount(from: change)
             }
             .onChange(of: currentTabID) { _, tabID in
                 syncContextBuilderQuestionPresentation()
@@ -217,10 +217,10 @@ struct AgentModeDetailWithSidebarView: View {
                 syncContextBuilderQuestionPresentation()
             }
             .onReceive(promptManager.fileManager.$selectedFiles.map(\.count).removeDuplicates()) { _ in
-                syncRuntimeMetricsSelectionCount()
+                syncRuntimeMetricsSelectionCountFromActiveUIIfCurrent()
             }
-            .onReceive(selectionCoordinator.changes) { _ in
-                syncRuntimeMetricsSelectionCount()
+            .onReceive(selectionCoordinator.changes) { change in
+                syncRuntimeMetricsSelectionCount(from: change)
             }
             .onChange(of: currentTabID) { _, tabID in
                 syncContextBuilderQuestionPresentation()
@@ -237,17 +237,31 @@ struct AgentModeDetailWithSidebarView: View {
         isContextBuilderQuestionPresented = contextBuilderAgentVM.pendingAskUser(for: currentTabID) != nil
     }
 
+    private var runtimeMetricsTargetTabID: UUID? {
+        currentTabID ?? promptManager.activeComposeTabID
+    }
+
     private func syncRuntimeMetricsSelectionCount() {
-        let activeTabID = selectionCoordinator.activeTabID() ?? promptManager.activeComposeTabID
-        let selection: StoredSelection = if currentTabID == activeTabID {
-            selectionCoordinator.activeSelectionSnapshot(flushPendingUI: true).selection
-        } else if let currentTabID,
-                  let tab = promptManager.currentComposeTabs.first(where: { $0.id == currentTabID })
-        {
-            tab.selection
-        } else {
-            StoredSelection()
+        guard let targetTabID = runtimeMetricsTargetTabID,
+              let snapshot = selectionCoordinator.selectionSnapshot(for: targetTabID, flushPendingUIIfActive: true)
+        else {
+            agentModeVM.syncRuntimeMetricsUIState(liveSelectedFileCount: nil)
+            return
         }
+        syncRuntimeMetricsSelectionCount(selection: snapshot.selection)
+    }
+
+    private func syncRuntimeMetricsSelectionCountFromActiveUIIfCurrent() {
+        guard runtimeMetricsTargetTabID == selectionCoordinator.activeTabID() else { return }
+        syncRuntimeMetricsSelectionCount()
+    }
+
+    private func syncRuntimeMetricsSelectionCount(from change: WorkspaceSelectionCoordinator.Change) {
+        guard change.tabID == runtimeMetricsTargetTabID else { return }
+        syncRuntimeMetricsSelectionCount(selection: change.selection)
+    }
+
+    private func syncRuntimeMetricsSelectionCount(selection: StoredSelection) {
         agentModeVM.syncRuntimeMetricsUIState(
             liveSelectedFileCount: AgentContextExportResolver.selectionFileCount(selection)
         )
