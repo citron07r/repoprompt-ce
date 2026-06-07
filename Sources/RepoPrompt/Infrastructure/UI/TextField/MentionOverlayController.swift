@@ -21,11 +21,12 @@ final class MentionOverlayController {
             for window in windows {
                 window.setVisibleRowLimit(normalizedLimit)
             }
+            enforceScreenBounds()
         }
     }
 
-    /// Remember latest caret anchor so we can re-anchor after every resize
-    private var caretAnchor: NSPoint?
+    /// Remember latest caret rect so we can re-anchor after every resize.
+    private var latestCaretRect: NSRect?
 
     // MARK: – Public API -----------------------------------------------------
 
@@ -39,17 +40,8 @@ final class MentionOverlayController {
         prepareRootWindowIfNeeded(owner: owner)
         guard let root = windows.first else { return }
 
-        if placement == .above {
-            caretAnchor = NSPoint(x: caret.minX, y: caret.maxY + 4)
-            if let anchor = caretAnchor {
-                root.setFrameOrigin(anchor)
-            }
-        } else {
-            caretAnchor = NSPoint(x: caret.minX, y: caret.minY - 2)
-            if let anchor = caretAnchor {
-                root.setFrameTopLeftPoint(anchor)
-            }
-        }
+        latestCaretRect = caret
+        enforceScreenBounds()
 
         root.orderFront(nil)
         root.alphaValue = 1
@@ -59,43 +51,15 @@ final class MentionOverlayController {
     /// Re-aligns the root window to the current caret (call after each resize
     /// or when the caret moved horizontally while typing).
     func repositionRoot(to caret: NSRect) {
-        if placement == .above {
-            caretAnchor = NSPoint(x: caret.minX, y: caret.maxY + 4)
-        } else {
-            caretAnchor = NSPoint(x: caret.minX, y: caret.minY - 2)
-        }
-
-        guard let root = windows.first,
-              let anchor = caretAnchor
-        else { return }
-
-        // 1. Move root
-        if placement == .above {
-            root.setFrameOrigin(anchor)
-        } else {
-            root.setFrameTopLeftPoint(anchor)
-        }
-
-        // 2. Chain children horizontally, preserving gaps
-        if windows.count > 1 {
-            for idx in 1 ..< windows.count {
-                let prev = windows[idx - 1]
-                let current = windows[idx]
-                if placement == .above {
-                    let bottomLeft = NSPoint(x: prev.frame.maxX + 4, y: prev.frame.minY)
-                    current.setFrameOrigin(bottomLeft)
-                } else {
-                    let topLeft = NSPoint(x: prev.frame.maxX - 1, y: prev.frame.maxY)
-                    current.setFrameTopLeftPoint(topLeft)
-                }
-            }
-        }
+        latestCaretRect = caret
+        enforceScreenBounds()
     }
 
     /// Replace the list of rows in the *current* level.
     func update(items: [MentionSuggestion], highlighted: Int) {
         guard let win = windows.last else { return }
         win.updateSuggestions(items, highlighted: highlighted)
+        enforceScreenBounds()
     }
 
     /// Move selection by ±delta in the *current* level.
@@ -114,6 +78,7 @@ final class MentionOverlayController {
         )
         windows.append(w)
         chainWindow(w, after: previous)
+        enforceScreenBounds()
     }
 
     /// Pop the deepest overlay level (go up one folder).
@@ -132,6 +97,7 @@ final class MentionOverlayController {
         }
         windows.removeAll()
         ownerWindow = nil
+        latestCaretRect = nil
     }
 
     // MARK: – Private --------------------------------------------------------
@@ -156,20 +122,117 @@ final class MentionOverlayController {
         max(limit, 1)
     }
 
+    static func positionedRootFrame(
+        caret: NSRect,
+        popupSize: NSSize,
+        placement: Placement,
+        visibleFrame: NSRect?
+    ) -> NSRect {
+        var frame = NSRect(origin: .zero, size: popupSize)
+        switch placement {
+        case .above:
+            frame.origin = NSPoint(x: caret.minX, y: caret.maxY + 4)
+        case .below:
+            frame.origin = NSPoint(x: caret.minX, y: caret.minY - 2 - popupSize.height)
+        }
+        return clampedFrame(frame, to: visibleFrame)
+    }
+
+    static func positionedChildFrame(
+        after previousFrame: NSRect,
+        popupSize: NSSize,
+        placement: Placement,
+        visibleFrame: NSRect?
+    ) -> NSRect {
+        var frame = NSRect(origin: .zero, size: popupSize)
+        switch placement {
+        case .above:
+            frame.origin = NSPoint(x: previousFrame.maxX + 4, y: previousFrame.minY)
+        case .below:
+            frame.origin = NSPoint(x: previousFrame.maxX - 1, y: previousFrame.maxY - popupSize.height)
+        }
+
+        if let visibleFrame,
+           frame.maxX > visibleFrame.maxX
+        {
+            let leftX = previousFrame.minX - popupSize.width - 4
+            if leftX >= visibleFrame.minX {
+                frame.origin.x = leftX
+            }
+        }
+
+        return clampedFrame(frame, to: visibleFrame)
+    }
+
+    static func clampedFrame(_ frame: NSRect, to visibleFrame: NSRect?) -> NSRect {
+        guard let visibleFrame else { return frame }
+        var clamped = frame
+
+        if clamped.width <= visibleFrame.width {
+            clamped.origin.x = min(max(clamped.minX, visibleFrame.minX), visibleFrame.maxX - clamped.width)
+        } else {
+            clamped.origin.x = visibleFrame.minX
+        }
+
+        if clamped.height <= visibleFrame.height {
+            clamped.origin.y = min(max(clamped.minY, visibleFrame.minY), visibleFrame.maxY - clamped.height)
+        } else {
+            clamped.origin.y = visibleFrame.minY
+        }
+
+        return clamped
+    }
+
     private func chainWindow(_ w: SuggestionWindow, after prev: NSWindow) {
         let parentWin = prev.parent ?? prev
         parentWin.addChildWindow(w, ordered: .above)
         w.orderFront(nil)
-
-        // Position to the right of previous
-        if placement == .above {
-            let bottomLeft = NSPoint(x: prev.frame.maxX + 4, y: prev.frame.minY)
-            w.setFrameOrigin(bottomLeft)
-        } else {
-            let topLeft = NSPoint(x: prev.frame.maxX - 1, y: prev.frame.maxY)
-            w.setFrameTopLeftPoint(topLeft)
-        }
+        w.setFrame(
+            Self.positionedChildFrame(
+                after: prev.frame,
+                popupSize: w.frame.size,
+                placement: placement,
+                visibleFrame: visibleFrame
+            ),
+            display: true
+        )
         w.alphaValue = 1
+    }
+
+    private var visibleFrame: NSRect? {
+        ownerWindow?.screen?.visibleFrame
+    }
+
+    private func enforceScreenBounds() {
+        guard !windows.isEmpty else { return }
+        if let root = windows.first,
+           let caret = latestCaretRect
+        {
+            root.setFrame(
+                Self.positionedRootFrame(
+                    caret: caret,
+                    popupSize: root.frame.size,
+                    placement: placement,
+                    visibleFrame: visibleFrame
+                ),
+                display: true
+            )
+        }
+
+        guard windows.count > 1 else { return }
+        for idx in 1 ..< windows.count {
+            let previous = windows[idx - 1]
+            let current = windows[idx]
+            current.setFrame(
+                Self.positionedChildFrame(
+                    after: previous.frame,
+                    popupSize: current.frame.size,
+                    placement: placement,
+                    visibleFrame: visibleFrame
+                ),
+                display: true
+            )
+        }
     }
 }
 

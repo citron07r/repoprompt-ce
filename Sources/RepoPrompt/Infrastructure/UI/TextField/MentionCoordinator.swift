@@ -48,6 +48,11 @@ final class MentionCoordinator: MentionTextViewDelegate {
     func updateConfiguration(_ configuration: FileMentionPickerConfiguration) {
         guard self.configuration != configuration else { return }
         self.configuration = configuration
+        textView.endMentionSession()
+        suggestions.removeAll()
+        highlighted = 0
+        parentStack = [nil]
+        highlightStack = [0]
         applyConfiguration(configuration)
     }
 

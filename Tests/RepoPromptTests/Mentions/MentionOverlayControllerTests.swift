@@ -29,4 +29,41 @@ final class MentionOverlayControllerTests: XCTestCase {
             "Native NSWindow shadows are rectangular and can show through around the rounded mention popup."
         )
     }
+
+    func testExpandedRootFrameClampsToVisibleScreenArea() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 800)
+        let caret = NSRect(x: 900, y: 10, width: 1, height: 18)
+        let popupSize = NSSize(width: 480, height: 400)
+
+        let frame = MentionOverlayController.positionedRootFrame(
+            caret: caret,
+            popupSize: popupSize,
+            placement: .below,
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertEqual(frame.width, popupSize.width)
+        XCTAssertEqual(frame.height, popupSize.height)
+        XCTAssertGreaterThanOrEqual(frame.minX, visibleFrame.minX)
+        XCTAssertLessThanOrEqual(frame.maxX, visibleFrame.maxX)
+        XCTAssertGreaterThanOrEqual(frame.minY, visibleFrame.minY)
+        XCTAssertLessThanOrEqual(frame.maxY, visibleFrame.maxY)
+    }
+
+    func testChildFrameOpensLeftWhenRightSideWouldOverflow() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 800)
+        let parentFrame = NSRect(x: 700, y: 300, width: 240, height: 240)
+        let childSize = NSSize(width: 240, height: 240)
+
+        let childFrame = MentionOverlayController.positionedChildFrame(
+            after: parentFrame,
+            popupSize: childSize,
+            placement: .below,
+            visibleFrame: visibleFrame
+        )
+
+        XCTAssertLessThan(childFrame.maxX, parentFrame.minX)
+        XCTAssertGreaterThanOrEqual(childFrame.minX, visibleFrame.minX)
+        XCTAssertLessThanOrEqual(childFrame.maxX, visibleFrame.maxX)
+    }
 }

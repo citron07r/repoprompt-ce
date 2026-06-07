@@ -54,12 +54,12 @@ final class FileTagMentionHelper {
         var shouldRefreshNow = false
         let lookupContextChanged = lookupContextIdentity != fileTagLookupContextIdentity
         let configurationChanged = configuration != self.configuration
+        if lookupContextChanged || configurationChanged {
+            dismiss()
+        }
         overlay.suggestedWidth = configuration.overlayWidth
         overlay.visibleRowLimit = configuration.visibleRows
         if service == nil || store !== fileTagStore || searchService !== fileTagSearchService || selectionCoordinator !== fileTagSelectionCoordinator || lookupContextChanged || configurationChanged {
-            if lookupContextChanged {
-                dismiss()
-            }
             service = AgentFileTagSuggestionService(
                 store: store,
                 searchService: searchService,
