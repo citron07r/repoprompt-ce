@@ -53,7 +53,7 @@ struct FileMentionPickerConfiguration: Equatable {
 
     static let expanded = FileMentionPickerConfiguration(
         maxResults: 99,
-        visibleRows: 15,
+        visibleRows: 10,
         overlayWidth: 480,
         showsFileSubtitles: true
     )
