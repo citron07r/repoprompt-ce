@@ -314,9 +314,30 @@ import MCP
             ]
         }
 
-        private func readSearchLimiterPayload(_ snapshot: AsyncLimiter.DebugSnapshot) -> [String: Any] {
+        private func readSearchLimiterPayload(
+            _ snapshot: MCPConnectionCallLimiterDebugSnapshot
+        ) -> [String: Any] {
             [
                 "found": true,
+                "lane_count": snapshot.laneCount,
+                "limit": snapshot.limit,
+                "permits": snapshot.permits,
+                "active_permit_count": snapshot.activePermitCount,
+                "waiter_count": snapshot.waiterCount,
+                "in_flight_count": snapshot.inFlight,
+                "oldest_waiter_age_ms": Self.debugOptionalValue(snapshot.oldestWaiterAgeMilliseconds),
+                "cancelled_waiter_count": snapshot.cancelledWaiterCount,
+                "is_closed": snapshot.isClosed,
+                "is_idle": snapshot.isIdle,
+                "lanes": [
+                    MCPConnectionCallLane.ordinary.rawValue: readSearchLimiterLanePayload(snapshot.ordinary),
+                    MCPConnectionCallLane.fileSearch.rawValue: readSearchLimiterLanePayload(snapshot.fileSearch)
+                ]
+            ]
+        }
+
+        private func readSearchLimiterLanePayload(_ snapshot: AsyncLimiter.DebugSnapshot) -> [String: Any] {
+            [
                 "limit": snapshot.limit,
                 "permits": snapshot.permits,
                 "active_permit_count": snapshot.activePermitCount,
@@ -379,6 +400,13 @@ import MCP
                     "age_ms": active.ageMilliseconds
                 ]
             }
+            let pending = snapshot.pending.map { pending in
+                [
+                    "target_watcher_watermark": pending.targetWatcherWatermark,
+                    "target_service_publication_sequence": pending.targetServicePublicationSequence,
+                    "age_ms": pending.ageMilliseconds
+                ]
+            }
             let completed = snapshot.lastCompleted.map { completed in
                 [
                     "token": completed.token,
@@ -394,8 +422,10 @@ import MCP
                 "launch_count": snapshot.launchCount,
                 "join_count": snapshot.joinCount,
                 "successor_count": snapshot.successorCount,
+                "coalesced_successor_count": snapshot.coalescedSuccessorCount,
                 "completion_count": snapshot.completionCount,
                 "active": Self.debugOptionalValue(active),
+                "pending": Self.debugOptionalValue(pending),
                 "last_completed": Self.debugOptionalValue(completed)
             ]
         }
