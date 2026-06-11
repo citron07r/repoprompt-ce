@@ -63,6 +63,19 @@ private final class MCPGitRequestContext {
         return branch
     }
 
+    func repositoryStatus(for repoURL: URL) async throws -> VCSRepositoryStatus {
+        let backend = await backend(for: repoURL)
+        let status = try await backend.getRepositoryStatus(at: repoURL)
+        let key = pathKey(repoURL)
+        resolvedBranchPaths.insert(key)
+        branchesByPath[key] = status.branch
+        if let headID = status.headID {
+            resolvedHeadPaths.insert(key)
+            headsByPath[key] = headID
+        }
+        return status
+    }
+
     func headID(for repoURL: URL) async -> String? {
         let key = pathKey(repoURL)
         if resolvedHeadPaths.contains(key) { return headsByPath[key] }
@@ -146,6 +159,24 @@ private final class MCPGitRequestContext {
     }
 }
 
+private struct MCPGitArtifactRepoOutcome {
+    typealias Reply = ToolResultDTOs.GitToolReplyDTO
+
+    let result: Reply.RepoResultDTO
+    let diff: Reply.DiffDTO?
+    let manifest: GitDiffSnapshotManifest?
+    let snapshotDir: String?
+    let publishedSnapshotPath: String?
+    let primaryArtifactCandidates: [String]
+}
+
+private struct MCPGitDiffRepoOutcome {
+    typealias Reply = ToolResultDTOs.GitToolReplyDTO
+
+    let result: Reply.RepoResultDTO
+    let diff: Reply.DiffDTO?
+}
+
 @MainActor
 final class MCPGitToolProvider: MCPWindowToolProviding {
     let group: MCPWindowToolGroup = .git
@@ -157,6 +188,8 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
         self.runtime = runtime
         self.dependencies = dependencies
     }
+
+    private nonisolated static let maxConcurrentRepositories = 3
 
     nonisolated static func worktreeWarning(from worktree: ToolResultDTOs.GitToolReplyDTO.WorktreeDTO?) -> String? {
         guard let worktree, worktree.isWorktree else { return nil }
@@ -178,6 +211,35 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
             parts.append("The primary checkout path could not be resolved. Pass its full path as repo_root to target it; compare=\"main\" still selects the trunk comparison base.")
         }
         return parts.joined(separator: " ")
+    }
+
+    nonisolated static func makeStatusDTO(
+        _ status: VCSRepositoryStatus
+    ) -> ToolResultDTOs.GitToolReplyDTO.StatusDTO {
+        var parts: [String] = []
+        if let branch = status.branch { parts.append(branch) }
+        if let ahead = status.ahead, let behind = status.behind {
+            parts.append("+\(ahead) -\(behind)")
+        }
+        let workingStatus = status.workingStatus
+        let counts = [
+            workingStatus.staged.isEmpty ? nil : "\(workingStatus.staged.count) staged",
+            workingStatus.modified.isEmpty ? nil : "\(workingStatus.modified.count) modified",
+            workingStatus.untracked.isEmpty ? nil : "\(workingStatus.untracked.count) untracked"
+        ].compactMap(\.self)
+        if !counts.isEmpty {
+            parts.append(counts.joined(separator: ", "))
+        }
+        return ToolResultDTOs.GitToolReplyDTO.StatusDTO(
+            branch: status.branch,
+            upstream: status.upstream,
+            ahead: status.ahead,
+            behind: status.behind,
+            staged: workingStatus.staged,
+            modified: workingStatus.modified,
+            untracked: workingStatus.untracked,
+            summary: parts.joined(separator: " | ")
+        )
     }
 
     func buildTools() -> [Tool] {
@@ -438,7 +500,7 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
             throw MCPError.invalidParams("Ambiguous snapshot_id: \(trimmed). Use snapshot_dir or repo_root/repo_key to disambiguate.")
         }
 
-        func looksLikeSnapshotID(_ value: String) -> Bool {
+        @Sendable func looksLikeSnapshotID(_ value: String) -> Bool {
             let parts = value.split(separator: "/")
             guard parts.count == 2 else { return false }
             let datePart = parts[0]
@@ -460,11 +522,11 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
             return true
         }
 
-        func resolveCompareSpec(_ compareRaw: String) async throws -> (spec: GitDiffCompareSpec, resolved: String, input: String?) {
+        @Sendable func resolveCompareSpec(_ compareRaw: String) async throws -> (spec: GitDiffCompareSpec, resolved: String, input: String?) {
             try await resolveCompareSpec(compareRaw, for: primaryRepo)
         }
 
-        func resolveCompareSpec(_ compareRaw: String, for repo: GitRepoDescriptor) async throws -> (spec: GitDiffCompareSpec, resolved: String, input: String?) {
+        @Sendable func resolveCompareSpec(_ compareRaw: String, for repo: GitRepoDescriptor) async throws -> (spec: GitDiffCompareSpec, resolved: String, input: String?) {
             let trimmed = compareRaw.trimmingCharacters(in: .whitespacesAndNewlines)
             let rawInput = trimmed.isEmpty ? "uncommitted" : trimmed
             let lowered = rawInput.lowercased()
@@ -542,118 +604,43 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
         // MARK: - Status
 
         case .status:
-            // Multi-root: run status for each repo
             if isMultiRepo {
-                var perRepoResults: [Reply.RepoResultDTO] = []
-                for repo in repos {
+                let perRepoResults = await BoundedOrderedConcurrentMap.map(
+                    repos,
+                    maxConcurrent: Self.maxConcurrentRepositories
+                ) { repo in
                     do {
-                        let backend = await requestContext.backend(for: repo.rootURL)
-                        let branch = await requestContext.currentBranch(for: repo.rootURL)
-                        let upstream = try? await backend.getUpstreamRef(at: repo.rootURL)
-                        var ahead: Int?
-                        var behind: Int?
-                        if let upstream {
-                            if let ab = try? await backend.getAheadBehind(vs: upstream, at: repo.rootURL) {
-                                ahead = ab.ahead
-                                behind = ab.behind
-                            }
-                        }
-                        let workingStatus = try await backend.getWorkingStatus(at: repo.rootURL)
+                        let status = try await requestContext.repositoryStatus(for: repo.rootURL)
                         let repoWorktree = await requestContext.worktreeDTO(for: repo.rootURL)
-                        let summaryStr: String = {
-                            var parts: [String] = []
-                            if let b = branch { parts.append(b) }
-                            if let a = ahead, let b = behind {
-                                parts.append("+\(a) -\(b)")
-                            }
-                            let counts = [
-                                workingStatus.staged.count > 0 ? "\(workingStatus.staged.count) staged" : nil,
-                                workingStatus.modified.count > 0 ? "\(workingStatus.modified.count) modified" : nil,
-                                workingStatus.untracked.count > 0 ? "\(workingStatus.untracked.count) untracked" : nil
-                            ].compactMap(\.self)
-                            if !counts.isEmpty {
-                                parts.append(counts.joined(separator: ", "))
-                            }
-                            return parts.joined(separator: " | ")
-                        }()
-
-                        perRepoResults.append(Reply.RepoResultDTO(
+                        return Reply.RepoResultDTO(
                             repoRoot: repo.rootPath,
                             repoKey: repo.repoKey,
                             repoName: repo.displayName,
-                            status: Reply.StatusDTO(
-                                branch: branch,
-                                upstream: upstream,
-                                ahead: ahead,
-                                behind: behind,
-                                staged: workingStatus.staged,
-                                modified: workingStatus.modified,
-                                untracked: workingStatus.untracked,
-                                summary: summaryStr
-                            ),
+                            status: Self.makeStatusDTO(status),
                             worktree: repoWorktree
-                        ))
+                        )
                     } catch {
-                        perRepoResults.append(Reply.RepoResultDTO(
+                        return Reply.RepoResultDTO(
                             repoRoot: repo.rootPath,
                             repoKey: repo.repoKey,
                             repoName: repo.displayName,
                             error: error.localizedDescription
-                        ))
+                        )
                     }
                 }
                 return Reply(op: "status", repos: perRepoResults)
             }
 
-            // Single repo: legacy behavior
-            let backend = await requestContext.backend(for: repoURL)
-            let branch = await requestContext.currentBranch(for: repoURL)
-            let upstream = try? await backend.getUpstreamRef(at: repoURL)
-            var ahead: Int?
-            var behind: Int?
-            if let upstream {
-                if let ab = try? await backend.getAheadBehind(vs: upstream, at: repoURL) {
-                    ahead = ab.ahead
-                    behind = ab.behind
-                }
-            }
-            let workingStatus = try await backend.getWorkingStatus(at: repoURL)
+            let status = try await requestContext.repositoryStatus(for: repoURL)
             let primaryWorktree = await requestContext.worktreeDTO(for: repoURL)
-            let worktreeWarning = buildWorktreeWarning(from: primaryWorktree)
-            let summaryStr: String = {
-                var parts: [String] = []
-                if let b = branch { parts.append(b) }
-                if let a = ahead, let b = behind {
-                    parts.append("+\(a) -\(b)")
-                }
-                let counts = [
-                    workingStatus.staged.count > 0 ? "\(workingStatus.staged.count) staged" : nil,
-                    workingStatus.modified.count > 0 ? "\(workingStatus.modified.count) modified" : nil,
-                    workingStatus.untracked.count > 0 ? "\(workingStatus.untracked.count) untracked" : nil
-                ].compactMap(\.self)
-                if !counts.isEmpty {
-                    parts.append(counts.joined(separator: ", "))
-                }
-                return parts.joined(separator: " | ")
-            }()
-
             return Reply(
                 op: "status",
-                status: Reply.StatusDTO(
-                    branch: branch,
-                    upstream: upstream,
-                    ahead: ahead,
-                    behind: behind,
-                    staged: workingStatus.staged,
-                    modified: workingStatus.modified,
-                    untracked: workingStatus.untracked,
-                    summary: summaryStr
-                ),
+                status: Self.makeStatusDTO(status),
                 diff: nil, log: nil, show: nil, blame: nil,
                 worktree: primaryWorktree,
                 snapshotId: nil, snapshotDir: nil,
                 artifacts: nil, summary: nil, oneliner: nil, inputs: nil, modeDetails: nil, inline: nil,
-                warning: worktreeWarning,
+                warning: buildWorktreeWarning(from: primaryWorktree),
                 emptyReason: nil, error: nil
             )
 
@@ -839,30 +826,33 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
 
                 // Multi-root artifact diff
                 if isMultiRepo {
-                    var perRepoResults: [Reply.RepoResultDTO] = []
-                    var collectedDiffs: [Reply.DiffDTO] = []
-                    var manifestsBySnapshotDir: [String: GitDiffSnapshotManifest] = [:]
-                    var publishedSnapshotPaths: [String] = []
-                    var primaryArtifactCandidates: [String] = []
                     let tabID = dependencies.boundTabID(connectionID)
 
                     // Group selection paths by repo
                     let pathsByRepo = scope == .selected ? groupAbsolutePathsByRepo(paths: allSelectedAbsolutePaths, repos: repos) : [:]
-
-                    for repo in repos {
+                    let outcomes = await BoundedOrderedConcurrentMap.map(
+                        repos,
+                        maxConcurrent: Self.maxConcurrentRepositories
+                    ) { repo in
                         do {
                             let repoCompare = try await resolveCompareSpec(compareRaw, for: repo)
                             let repoWorktree = await requestContext.worktreeDTO(for: repo.rootURL)
                             let repoSelectedPaths = scope == .selected ? (pathsByRepo[repo] ?? []) : []
                             if scope == .selected, repoSelectedPaths.isEmpty {
-                                perRepoResults.append(Reply.RepoResultDTO(
-                                    repoRoot: repo.rootPath,
-                                    repoKey: repo.repoKey,
-                                    repoName: repo.displayName,
-                                    worktree: repoWorktree,
-                                    emptyReason: "No selected paths in this repo"
-                                ))
-                                continue
+                                return MCPGitArtifactRepoOutcome(
+                                    result: Reply.RepoResultDTO(
+                                        repoRoot: repo.rootPath,
+                                        repoKey: repo.repoKey,
+                                        repoName: repo.displayName,
+                                        worktree: repoWorktree,
+                                        emptyReason: "No selected paths in this repo"
+                                    ),
+                                    diff: nil,
+                                    manifest: nil,
+                                    snapshotDir: nil,
+                                    publishedSnapshotPath: nil,
+                                    primaryArtifactCandidates: []
+                                )
                             }
 
                             let manifest = try await publisher.publish(
@@ -880,9 +870,12 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
                                 tabID: tabID
                             )
                             let snapshotID = manifest.snapshotID
-                            let snapshotDirURL = store.snapshotDir(workspaceDirectory: workspaceDirectory, repoKey: repo.repoKey, snapshotID: snapshotID)
+                            let snapshotDirURL = store.snapshotDir(
+                                workspaceDirectory: workspaceDirectory,
+                                repoKey: repo.repoKey,
+                                snapshotID: snapshotID
+                            )
                             let snapshotDirRel = store.snapshotRelativePath(repoKey: repo.repoKey, snapshotID: snapshotID)
-                            publishedSnapshotPaths.append(snapshotDirURL.path)
                             let projection = try await MCPGitToolProjection.makeArtifactProjection(
                                 snapshotDirURL: snapshotDirURL,
                                 snapshotDir: snapshotDirRel,
@@ -893,32 +886,54 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
                                 inlineMode: inlineMode,
                                 inlineMaxLines: inlineMaxLines
                             )
-                            collectedDiffs.append(projection.diff)
-                            primaryArtifactCandidates.append(contentsOf: projection.primaryArtifactCandidates)
-                            manifestsBySnapshotDir[snapshotDirRel] = manifest
-                            perRepoResults.append(Reply.RepoResultDTO(
-                                repoRoot: repo.rootPath,
-                                repoKey: repo.repoKey,
-                                repoName: repo.displayName,
+                            return MCPGitArtifactRepoOutcome(
+                                result: Reply.RepoResultDTO(
+                                    repoRoot: repo.rootPath,
+                                    repoKey: repo.repoKey,
+                                    repoName: repo.displayName,
+                                    diff: projection.diff,
+                                    worktree: repoWorktree,
+                                    snapshotId: snapshotID,
+                                    snapshotDir: snapshotDirRel,
+                                    artifacts: projection.artifacts,
+                                    summary: projection.summary,
+                                    oneliner: projection.oneliner,
+                                    inputs: projection.inputs,
+                                    modeDetails: projection.modeDetails,
+                                    inline: projection.inline,
+                                    emptyReason: projection.emptyReason
+                                ),
                                 diff: projection.diff,
-                                worktree: repoWorktree,
-                                snapshotId: snapshotID,
+                                manifest: manifest,
                                 snapshotDir: snapshotDirRel,
-                                artifacts: projection.artifacts,
-                                summary: projection.summary,
-                                oneliner: projection.oneliner,
-                                inputs: projection.inputs,
-                                modeDetails: projection.modeDetails,
-                                inline: projection.inline,
-                                emptyReason: projection.emptyReason
-                            ))
+                                publishedSnapshotPath: snapshotDirURL.path,
+                                primaryArtifactCandidates: projection.primaryArtifactCandidates
+                            )
                         } catch {
-                            perRepoResults.append(Reply.RepoResultDTO(
-                                repoRoot: repo.rootPath,
-                                repoKey: repo.repoKey,
-                                repoName: repo.displayName,
-                                error: error.localizedDescription
-                            ))
+                            return MCPGitArtifactRepoOutcome(
+                                result: Reply.RepoResultDTO(
+                                    repoRoot: repo.rootPath,
+                                    repoKey: repo.repoKey,
+                                    repoName: repo.displayName,
+                                    error: error.localizedDescription
+                                ),
+                                diff: nil,
+                                manifest: nil,
+                                snapshotDir: nil,
+                                publishedSnapshotPath: nil,
+                                primaryArtifactCandidates: []
+                            )
+                        }
+                    }
+
+                    let perRepoResults = outcomes.map(\.result)
+                    let collectedDiffs = outcomes.compactMap(\.diff)
+                    let publishedSnapshotPaths = outcomes.compactMap(\.publishedSnapshotPath)
+                    let primaryArtifactCandidates = outcomes.flatMap(\.primaryArtifactCandidates)
+                    var manifestsBySnapshotDir: [String: GitDiffSnapshotManifest] = [:]
+                    for outcome in outcomes {
+                        if let snapshotDir = outcome.snapshotDir, let manifest = outcome.manifest {
+                            manifestsBySnapshotDir[snapshotDir] = manifest
                         }
                     }
 
@@ -1022,14 +1037,13 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
 
             // Multi-root non-artifact diff
             if isMultiRepo {
-                var perRepoResults: [Reply.RepoResultDTO] = []
-                var collectedDiffs: [Reply.DiffDTO] = []
-
-                for repo in repos {
+                let outcomes = await BoundedOrderedConcurrentMap.map(
+                    repos,
+                    maxConcurrent: Self.maxConcurrentRepositories
+                ) { repo in
                     do {
                         let repoCompare = try await resolveCompareSpec(compareRaw, for: repo)
                         let repoWorktree = await requestContext.worktreeDTO(for: repo.rootURL)
-
                         let buildResult = try await engine.buildSnapshotInputs(
                             compare: repoCompare.spec,
                             pathspecs: pathspecs,
@@ -1038,7 +1052,6 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
                             detectRenames: detectRenames,
                             generateDiffText: includesHunks
                         )
-
                         let diffDTO = try await MCPGitToolProjection.makeDiffDTO(
                             compare: repoCompare.resolved,
                             detail: effectiveDetail,
@@ -1046,24 +1059,30 @@ final class MCPGitToolProvider: MCPWindowToolProviding {
                             perFilePatches: includesHunks ? buildResult.perFile : nil,
                             maxLinesForPatches: maxLinesForPatches
                         )
-                        collectedDiffs.append(diffDTO)
-
-                        perRepoResults.append(Reply.RepoResultDTO(
-                            repoRoot: repo.rootPath,
-                            repoKey: repo.repoKey,
-                            repoName: repo.displayName,
-                            diff: diffDTO,
-                            worktree: repoWorktree
-                        ))
+                        return MCPGitDiffRepoOutcome(
+                            result: Reply.RepoResultDTO(
+                                repoRoot: repo.rootPath,
+                                repoKey: repo.repoKey,
+                                repoName: repo.displayName,
+                                diff: diffDTO,
+                                worktree: repoWorktree
+                            ),
+                            diff: diffDTO
+                        )
                     } catch {
-                        perRepoResults.append(Reply.RepoResultDTO(
-                            repoRoot: repo.rootPath,
-                            repoKey: repo.repoKey,
-                            repoName: repo.displayName,
-                            error: error.localizedDescription
-                        ))
+                        return MCPGitDiffRepoOutcome(
+                            result: Reply.RepoResultDTO(
+                                repoRoot: repo.rootPath,
+                                repoKey: repo.repoKey,
+                                repoName: repo.displayName,
+                                error: error.localizedDescription
+                            ),
+                            diff: nil
+                        )
                     }
                 }
+                let perRepoResults = outcomes.map(\.result)
+                let collectedDiffs = outcomes.compactMap(\.diff)
 
                 let aggregate = try await MCPGitToolProjection.makeAggregateDTO(
                     from: collectedDiffs,

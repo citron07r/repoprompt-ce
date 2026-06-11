@@ -64,7 +64,7 @@ Improve MCP throughput across same-connection bursts, parallel agent threads, lo
 - [x] Phase 1 / WI-6 — long-thread transcript critical path
 - [x] Phase 1 / WI-7 — `read_file` content reuse and freshness narrowing
 - [x] Phase 2 / WI-8 — off-MainActor provider projection
-- [ ] Phase 2 / WI-9 — bounded Git concurrency and command consolidation
+- [x] Phase 2 / WI-9 — bounded Git concurrency and command consolidation
 - [ ] Phase 2 / WI-10 — classified, resource-keyed ordinary-tool admission
 - [ ] Phase 3 / WI-11 — immutable per-root catalog shards and scope composition
 - [ ] Phase 3 / WI-12 — canonical delta application to shards

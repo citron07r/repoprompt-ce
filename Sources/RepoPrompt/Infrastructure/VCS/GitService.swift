@@ -45,6 +45,8 @@ actor GitService {
     }
 
     private let worktreeMutationCoordinator = GitWorktreeMutationCoordinator()
+    private let inheritedProcessEnvironment = ProcessInfo.processInfo.environment
+    private var preparedBaseProcessEnvironment: [String: String]?
 
     struct UncommittedFile: Equatable {
         let path: String
@@ -689,7 +691,11 @@ actor GitService {
     /// Get a status fingerprint for staleness detection.
     func getStatusFingerprint(at repoURL: URL, baseRef: String = "HEAD") async throws -> GitDiffFingerprint {
         let headSHA = try await getHeadSHA(at: repoURL)
-        let baseRefSHA = try await getRefSHA(at: repoURL, ref: baseRef)
+        let baseRefSHA = if baseRef == "HEAD" {
+            headSHA
+        } else {
+            try await getRefSHA(at: repoURL, ref: baseRef)
+        }
         let statusData = try await getStatusPorcelainZ(at: repoURL)
         var fingerprintData = Data()
         fingerprintData.append(statusData)
@@ -1020,25 +1026,64 @@ actor GitService {
         return (Character(scalarValue), nextIndex)
     }
 
-    /// Get diff for untracked files by comparing each file to /dev/null
+    /// Get untracked-file patches in one no-index Git process.
     func getUntrackedDiff(for files: [String], contextLines: Int, at repoURL: URL) async throws -> String {
         guard !files.isEmpty else { return "" }
 
-        var combined = ""
+        let fileManager = FileManager.default
+        let batchRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("RepoPrompt-GitUntrackedDiff-\(UUID().uuidString)", isDirectory: true)
+        let emptyRoot = batchRoot.appendingPathComponent("empty", isDirectory: true)
+        let mirrorRoot = batchRoot.appendingPathComponent("mirror", isDirectory: true)
+        try fileManager.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: mirrorRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: batchRoot) }
+
+        let standardizedRepo = repoURL.standardizedFileURL.path
+        let repoPrefix = standardizedRepo.hasSuffix("/") ? standardizedRepo : standardizedRepo + "/"
         for file in files {
-            let args = ["diff", "--no-index", "--unified=\(contextLines)", "--no-ext-diff", "--color=never", "--", "/dev/null", file]
-            // --no-index doesn't need repo context, so skip GIT_DIR/GIT_WORK_TREE injection
-            let (stdout, stderr, exitCode) = try await runGit(args, at: repoURL, requiresRepoContext: false)
-            guard exitCode == 0 || exitCode == 1 else {
-                throw GitError(message: "git diff --no-index failed: \(stderr)")
+            let source = repoURL.appendingPathComponent(file).standardizedFileURL
+            guard source.path.hasPrefix(repoPrefix) else {
+                throw GitError(message: "untracked diff path escapes repository: \(file)")
             }
-            if !stdout.isEmpty {
-                combined += stdout
-                if !combined.hasSuffix("\n") { combined += "\n" }
-            }
+            let destination = mirrorRoot.appendingPathComponent(file)
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try fileManager.copyItem(at: source, to: destination)
         }
 
-        return combined
+        let args = [
+            "diff", "--no-index", "--unified=\(contextLines)",
+            "--no-ext-diff", "--no-textconv", "--color=never", "--", "../empty", "."
+        ]
+        let (stdout, stderr, exitCode) = try await runGit(
+            args,
+            at: mirrorRoot,
+            requiresRepoContext: false,
+            budgetRepoURL: repoURL
+        )
+        guard exitCode == 0 || exitCode == 1 else {
+            throw GitError(message: "git diff --no-index failed: \(stderr)")
+        }
+        return Self.normalizeBatchedUntrackedDiffPaths(stdout)
+    }
+
+    nonisolated static func normalizeBatchedUntrackedDiffPaths(_ output: String) -> String {
+        output.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            let text = String(line)
+            guard text.hasPrefix("diff --git ")
+                || text.hasPrefix("--- ")
+                || text.hasPrefix("+++ ")
+                || text.hasPrefix("Binary files ")
+            else { return text }
+            return text
+                .replacingOccurrences(of: "a/./", with: "a/")
+                .replacingOccurrences(of: "b/./", with: "b/")
+                .replacingOccurrences(of: "\"a/./", with: "\"a/")
+                .replacingOccurrences(of: "\"b/./", with: "\"b/")
+        }.joined(separator: "\n")
     }
 
     /// Get diff for specific files (all uncommitted changes - staged and unstaged)
@@ -1808,8 +1853,19 @@ actor GitService {
         detectRenames: Bool = false,
         at repoURL: URL
     ) async throws -> [UncommittedFile] {
-        let numOut = try await getDiffNumstat(compare: compare, detectRenames: detectRenames, at: repoURL)
-        let nameOut = try await getDiffNameStatus(compare: compare, detectRenames: detectRenames, at: repoURL)
+        let includeUntracked = includeUntrackedWhenApplicable && {
+            switch compare {
+            case .uncommitted, .uncommittedMergeBase, .unstaged:
+                true
+            case .staged, .stagedMergeBase, .revspec:
+                false
+            }
+        }()
+
+        async let numOutTask = getDiffNumstat(compare: compare, detectRenames: detectRenames, at: repoURL)
+        async let nameOutTask = getDiffNameStatus(compare: compare, detectRenames: detectRenames, at: repoURL)
+        async let untrackedFilesTask = includeUntracked ? getUntrackedPaths(at: repoURL) : []
+        let (numOut, nameOut, untrackedFiles) = try await (numOutTask, nameOutTask, untrackedFilesTask)
         let (statsMap, statusMap) = MCPToolWorkCountDiagnostics.measureGitParse {
             (parseNumstatOutput(numOut), parseNameStatusOutput(nameOut))
         }
@@ -1832,25 +1888,7 @@ actor GitService {
             )
         }
 
-        let includeUntracked = includeUntrackedWhenApplicable && {
-            switch compare {
-            case .uncommitted, .uncommittedMergeBase, .unstaged:
-                true
-            case .staged, .stagedMergeBase, .revspec:
-                false
-            }
-        }()
-
         if includeUntracked {
-            let (untrackedOut, _, untrackedExit) = try await runGit(["ls-files", "--others", "--exclude-standard"], at: repoURL)
-            guard untrackedExit == 0 else {
-                throw GitError(message: "git ls-files failed")
-            }
-            let untrackedFiles = untrackedOut
-                .split(separator: "\n")
-                .map { String($0) }
-                .filter { !$0.isEmpty }
-
             for path in untrackedFiles {
                 if !allPaths.contains(path) {
                     let stats = untrackedLineStats(for: path, repoURL: repoURL)
@@ -1875,6 +1913,17 @@ actor GitService {
             }
             return lhs.original < rhs.original
         }.map(\.file)
+    }
+
+    private func getUntrackedPaths(at repoURL: URL) async throws -> [String] {
+        let (stdout, stderr, exitCode) = try await runGit(
+            ["ls-files", "--others", "--exclude-standard"],
+            at: repoURL
+        )
+        guard exitCode == 0 else {
+            throw GitError(message: "git ls-files failed: \(stderr)")
+        }
+        return stdout.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     }
 
     func getCommitGraph(maxLines: Int, at repoURL: URL) async throws -> String {
@@ -1926,65 +1975,48 @@ actor GitService {
     }
 
     /// Structured working directory status.
-    struct WorkingStatus {
+    struct WorkingStatus: Equatable {
         let staged: [String]
         let modified: [String]
         let untracked: [String]
     }
 
-    /// Get structured working status with staged, modified, and untracked files.
-    func getWorkingStatus(at repoURL: URL) async throws -> WorkingStatus {
-        let args = ["status", "--porcelain", "-z", "--untracked-files=all"]
+    struct RepositoryStatus: Equatable {
+        let branch: String?
+        let headID: String?
+        let upstream: String?
+        let ahead: Int?
+        let behind: Int?
+        let workingStatus: WorkingStatus
+    }
+
+    /// Read branch metadata and working-tree state from one porcelain-v2 snapshot.
+    func getRepositoryStatus(at repoURL: URL) async throws -> RepositoryStatus {
+        let args = ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]
         let (stdout, stderr, exitCode) = try await runGit(args, at: repoURL)
         guard exitCode == 0 else {
-            throw GitError(message: "git status --porcelain -z failed: \(stderr)")
+            throw GitError(message: "git status --porcelain=v2 failed: \(stderr)")
         }
-
-        return MCPToolWorkCountDiagnostics.measureGitParse {
-            var staged: [String] = []
-            var modified: [String] = []
-            var untracked: [String] = []
-
-            // Parse NUL-delimited entries
-            // Format: XY<space>path<NUL>[origPath<NUL> for renames]
-            let entries = stdout.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
-            var i = 0
-            while i < entries.count {
-                let entry = entries[i]
-                guard entry.count >= 3 else {
-                    i += 1
-                    continue
-                }
-
-                let indexStatus = entry[entry.startIndex]
-                let workTreeStatus = entry[entry.index(after: entry.startIndex)]
-                let pathStart = entry.index(entry.startIndex, offsetBy: 3)
-                let path = String(entry[pathStart...])
-
-                guard !path.isEmpty else {
-                    i += 1
-                    continue
-                }
-                if indexStatus == "?" && workTreeStatus == "?" {
-                    untracked.append(path)
-                    i += 1
-                    continue
-                }
-                if indexStatus != " " && indexStatus != "?" {
-                    staged.append(path)
-                }
-                if workTreeStatus != " " && workTreeStatus != "?" {
-                    modified.append(path)
-                }
-                i += (indexStatus == "R" || indexStatus == "C") ? 2 : 1
-            }
-
-            return WorkingStatus(
-                staged: staged.sorted(),
-                modified: modified.sorted(),
-                untracked: untracked.sorted()
+        let parsed = try MCPToolWorkCountDiagnostics.measureGitParse {
+            try GitStatusPorcelainV2Parser.parse(stdout)
+        }
+        return RepositoryStatus(
+            branch: parsed.branch,
+            headID: parsed.headID,
+            upstream: parsed.upstream,
+            ahead: parsed.ahead,
+            behind: parsed.behind,
+            workingStatus: WorkingStatus(
+                staged: parsed.staged,
+                modified: parsed.modified,
+                untracked: parsed.untracked
             )
-        }
+        )
+    }
+
+    /// Compatibility wrapper for callers that only need working-tree paths.
+    func getWorkingStatus(at repoURL: URL) async throws -> WorkingStatus {
+        try await getRepositoryStatus(at: repoURL).workingStatus
     }
 
     /// Summary of a commit for log output.
@@ -2249,12 +2281,38 @@ actor GitService {
     }
 
     private func processEnvironment() async -> [String: String] {
-        let baseEnvironment = ProcessInfo.processInfo.environment
+        if let preparedBaseProcessEnvironment {
+            return preparedBaseProcessEnvironment
+        }
         let shellEnvironment = await CLIEnvironmentCache.shared.environment(enableLogging: false)
-        return Self.mergedProcessEnvironment(
-            baseEnvironment: baseEnvironment,
+        let environment = Self.mergedProcessEnvironment(
+            baseEnvironment: inheritedProcessEnvironment,
             shellEnvironment: shellEnvironment
         )
+        preparedBaseProcessEnvironment = environment
+        return environment
+    }
+
+    nonisolated static func isVerifiedReadOnlyGitOperation(_ args: [String]) -> Bool {
+        guard let command = args.first else { return false }
+        switch command {
+        case "rev-parse", "status", "ls-files", "diff", "merge-base", "merge-tree",
+             "show-ref", "for-each-ref", "log", "rev-list", "show", "blame", "cat-file":
+            return true
+        case "worktree":
+            return args.dropFirst().first == "list"
+        case "symbolic-ref":
+            return args.contains("--short") && args.last == "HEAD"
+        case "branch":
+            return args == ["branch", "--show-current"]
+        case "config":
+            return args.contains("--get")
+        default:
+            if command == "--git-dir", let configIndex = args.firstIndex(of: "config") {
+                return args[configIndex...].contains("--get")
+            }
+            return false
+        }
     }
 
     private func runGit(
@@ -2262,16 +2320,14 @@ actor GitService {
         at repoURL: URL,
         env: [String: String] = [:],
         stdin: Data? = nil,
-        requiresRepoContext: Bool = true
+        requiresRepoContext: Bool = true,
+        budgetRepoURL: URL? = nil
     ) async throws -> (String, String, Int32) {
-        let process = Process()
-        let commandRecorder = MCPToolWorkCountDiagnostics.gitCommandRecorder()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = args
-        process.currentDirectoryURL = repoURL
-
         var environment = await processEnvironment()
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        if Self.isVerifiedReadOnlyGitOperation(args) {
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+        }
 
         // For gitfile worktrees, inject GIT_DIR and GIT_WORK_TREE to ensure
         // git commands operate in the correct context.
@@ -2280,8 +2336,43 @@ actor GitService {
             environment["GIT_DIR"] = layout.gitDir.path
             environment["GIT_WORK_TREE"] = layout.workTreeRoot.path
         }
-
         environment.merge(env) { _, new in new }
+
+        let budgetURL = budgetRepoURL ?? repoURL
+        let repositoryKey = getLayout(for: budgetURL)?.commonDir.standardizedFileURL.path
+            ?? budgetURL.standardizedFileURL.path
+        let lease = try await GitProcessAdmissionController.shared.acquire(repositoryKey: repositoryKey)
+        do {
+            try Task.checkCancellation()
+            let result = try await runAdmittedGit(
+                args,
+                at: repoURL,
+                environment: environment,
+                stdin: stdin,
+                diagnosticRepositoryPath: budgetURL.standardizedFileURL.path,
+                processQueueWaitMicroseconds: lease.queueWaitMicroseconds
+            )
+            await GitProcessAdmissionController.shared.release(lease)
+            return result
+        } catch {
+            await GitProcessAdmissionController.shared.release(lease)
+            throw error
+        }
+    }
+
+    private func runAdmittedGit(
+        _ args: [String],
+        at repoURL: URL,
+        environment: [String: String],
+        stdin: Data?,
+        diagnosticRepositoryPath: String,
+        processQueueWaitMicroseconds: Int
+    ) async throws -> (String, String, Int32) {
+        let process = Process()
+        let commandRecorder = MCPToolWorkCountDiagnostics.gitCommandRecorder()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        process.currentDirectoryURL = repoURL
         process.environment = environment
 
         let outPipe = Pipe()
@@ -2349,9 +2440,9 @@ actor GitService {
                         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
                         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
                         commandRecorder(
-                            repoURL.standardizedFileURL.path,
+                            diagnosticRepositoryPath,
                             args,
-                            0,
+                            processQueueWaitMicroseconds,
                             processMetrics.spawnMicroseconds,
                             stdoutData.count + stderrData.count
                         )
@@ -2391,9 +2482,9 @@ actor GitService {
                     }
                 } catch {
                     commandRecorder(
-                        repoURL.standardizedFileURL.path,
+                        diagnosticRepositoryPath,
                         args,
-                        0,
+                        processQueueWaitMicroseconds,
                         processMetrics.spawnMicroseconds,
                         0
                     )

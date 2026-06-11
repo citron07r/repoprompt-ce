@@ -7,6 +7,7 @@ enum MCPToolWorkCountDiagnostics {
         let requestIdentity: MCPRequestTimelineIdentity?
         let repositories: [String]
         let commandCount: Int
+        let commandCountsByRepository: [String: Int]
         let processQueueWaitMicroseconds: Int
         let spawnMicroseconds: Int
         let outputBytes: Int
@@ -33,6 +34,7 @@ enum MCPToolWorkCountDiagnostics {
             let requestIdentity: MCPRequestTimelineIdentity?
             private var repositories: [String] = []
             private var commandCount = 0
+            private var commandCountsByRepository: [String: Int] = [:]
             private var processQueueWaitMicroseconds = 0
             private var spawnMicroseconds = 0
             private var outputBytes = 0
@@ -59,6 +61,7 @@ enum MCPToolWorkCountDiagnostics {
             ) {
                 lock.lock()
                 commandCount += 1
+                commandCountsByRepository[repository, default: 0] += 1
                 self.processQueueWaitMicroseconds += max(0, processQueueWaitMicroseconds)
                 self.spawnMicroseconds += max(0, spawnMicroseconds)
                 self.outputBytes += max(0, outputBytes)
@@ -86,6 +89,7 @@ enum MCPToolWorkCountDiagnostics {
                     requestIdentity: requestIdentity,
                     repositories: repositories,
                     commandCount: commandCount,
+                    commandCountsByRepository: commandCountsByRepository,
                     processQueueWaitMicroseconds: processQueueWaitMicroseconds,
                     spawnMicroseconds: spawnMicroseconds,
                     outputBytes: outputBytes,
