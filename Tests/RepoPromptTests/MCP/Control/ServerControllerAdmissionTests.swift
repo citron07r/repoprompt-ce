@@ -53,4 +53,13 @@ final class ServerControllerAdmissionTests: XCTestCase {
             throw XCTSkip("DEBUG-only ServerController admission seams are unavailable in release builds: testDefaultAllowListDoesNotIncludeRepoPromptCLI, testDefaultAllowListIncludesSynchronousACPClients")
         #endif
     }
+
+    func testBuiltInAlwaysAllowedClientMatchesDefaultFamiliesAndVariants() {
+        XCTAssertTrue(ServerController.isBuiltInAlwaysAllowedClient("claude-code"))
+        XCTAssertTrue(ServerController.isBuiltInAlwaysAllowedClient("Claude Code v2.1"))
+        XCTAssertTrue(ServerController.isBuiltInAlwaysAllowedClient("opencode"))
+        XCTAssertTrue(ServerController.isBuiltInAlwaysAllowedClient("cursor-agent"))
+        XCTAssertFalse(ServerController.isBuiltInAlwaysAllowedClient("my-custom-client"))
+        XCTAssertFalse(ServerController.isBuiltInAlwaysAllowedClient("RepoPrompt CLI"))
+    }
 }
