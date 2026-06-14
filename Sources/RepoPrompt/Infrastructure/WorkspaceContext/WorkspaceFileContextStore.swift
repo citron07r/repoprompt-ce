@@ -1511,6 +1511,10 @@ actor WorkspaceFileContextStore {
             }
         #endif
         guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
+        if publication.source == .overflowRootRescan || publication.source == .recoveryFullResync {
+            await invalidateRetainedSearchContentForRecoveryUncertainty(rootID: root.id)
+            guard isRootLifetimeCurrent(rootID: root.id, expectedLifetimeID: expectedLifetimeID) else { return }
+        }
         await handleObservedFileSystemDeltas(
             publication.deltas,
             root: root,
@@ -6487,6 +6491,26 @@ actor WorkspaceFileContextStore {
             await searchDecodedContentCache.invalidate(key, through: invalidationEpoch)
             await interactiveReadCache.invalidate(key, through: invalidationEpoch)
         }
+    }
+
+    private func invalidateRetainedSearchContentForRecoveryUncertainty(rootID: UUID) async {
+        guard let state = rootStatesByID[rootID] else { return }
+        var invalidations = WorkspaceSearchContentInvalidationBatch()
+        for fileID in state.fileIDsByRelativePath.values {
+            guard let file = filesByID[fileID] else { continue }
+            let key = WorkspaceSearchContentCacheKey(
+                rootID: file.rootID,
+                fileID: file.id,
+                standardizedRelativePath: file.standardizedRelativePath
+            )
+            nextSearchContentInvalidationEpoch &+= 1
+            let invalidationEpoch = nextSearchContentInvalidationEpoch
+            searchContentInvalidationEpochsByFileID[file.id] = invalidationEpoch
+            invalidations.record(key, through: invalidationEpoch)
+        }
+        guard !invalidations.isEmpty else { return }
+        await searchDecodedContentCache.invalidate(invalidations)
+        await interactiveReadCache.invalidate(invalidations)
     }
 
     private func finalizePublicationInvalidations(_ batch: PublicationInvalidationBatch) {

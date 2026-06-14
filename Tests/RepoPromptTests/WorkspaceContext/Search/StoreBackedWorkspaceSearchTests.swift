@@ -282,6 +282,68 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertEqual(fingerprintRequestCount, 1)
         }
 
+        func testOverflowCompletionInvalidatesRetainedWarmContentBeforeWatermarkReuse() async throws {
+            let root = try makeTemporaryRoot(name: "OverflowRetainedContent")
+            let fileURL = root.appendingPathComponent("A.swift")
+            try write("let oldOverflowNeedle = true\n", to: fileURL)
+            let store = WorkspaceFileContextStore()
+            let record = try await store.loadRoot(path: root.path)
+            let attachedPublisherIngress = try await store
+                .attachPublisherIngressWithoutStartingWatcherForTesting(rootID: record.id)
+            XCTAssertTrue(attachedPublisherIngress)
+            try await store.setCachedSearchContentWatcherActiveOverrideForTesting(rootID: record.id, true)
+            addTeardownBlock {
+                try? await store.setCachedSearchContentWatcherActiveOverrideForTesting(rootID: record.id, nil)
+                await store.stopWatchingRoot(id: record.id)
+            }
+
+            let cold = try await searchContent(pattern: "oldOverflowNeedle", store: store)
+            XCTAssertEqual(cold.matches?.map(\.filePath), [fileURL.path])
+            try await store.resetSearchContentFingerprintRequestCountForTesting(rootID: record.id)
+            let warm = try await searchContent(pattern: "oldOverflowNeedle", store: store)
+            let warmFingerprintRequestCount = try await store
+                .searchContentFingerprintRequestCountForTesting(rootID: record.id)
+            XCTAssertEqual(warm.matches?.map(\.filePath), [fileURL.path])
+            XCTAssertEqual(warmFingerprintRequestCount, 0)
+
+            try write("let newOverflowNeedle = true\n", to: fileURL)
+            let optionalService = await store.fileSystemServiceForTesting(rootID: record.id)
+            let service = try XCTUnwrap(optionalService)
+            let eventID: FSEventStreamEventId = 1
+            let optionalAccepted = await service.acceptWatcherPayloadForTesting(
+                [(
+                    absolutePath: fileURL.path,
+                    flags: FSEventStreamEventFlags(
+                        kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile
+                    ),
+                    eventId: eventID
+                )],
+                scheduleDrain: false
+            )
+            let accepted = try XCTUnwrap(optionalAccepted)
+            await service.collapsePendingEventsToRootRescan(
+                upTo: eventID,
+                acceptedHighWatermark: accepted
+            )
+            _ = await store.awaitAppliedIngress(rootScope: .visibleWorkspace)
+
+            try await store.resetSearchContentFingerprintRequestCountForTesting(rootID: record.id)
+            let refreshed = try await searchContent(pattern: "newOverflowNeedle", store: store)
+            let stale = try await searchContent(pattern: "oldOverflowNeedle", store: store)
+            let refreshedFingerprintRequestCount = try await store
+                .searchContentFingerprintRequestCountForTesting(rootID: record.id)
+            XCTAssertEqual(refreshed.matches?.map(\.filePath), [fileURL.path])
+            XCTAssertTrue((stale.matches ?? []).isEmpty)
+            XCTAssertEqual(refreshedFingerprintRequestCount, 1)
+
+            try await store.resetSearchContentFingerprintRequestCountForTesting(rootID: record.id)
+            let rewarmed = try await searchContent(pattern: "newOverflowNeedle", store: store)
+            let rewarmedFingerprintRequestCount = try await store
+                .searchContentFingerprintRequestCountForTesting(rootID: record.id)
+            XCTAssertEqual(rewarmed.matches?.map(\.filePath), [fileURL.path])
+            XCTAssertEqual(rewarmedFingerprintRequestCount, 0)
+        }
+
         func testWatcherAcceptedAfterBarrierForcesStrictMetadataFallback() async throws {
             let root = try makeTemporaryRoot(name: "WatcherFreshnessGap")
             let fileURL = root.appendingPathComponent("A.swift")
