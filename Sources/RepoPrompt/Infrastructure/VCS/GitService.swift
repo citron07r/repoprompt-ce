@@ -2985,6 +2985,19 @@ final class GitProcessPipeDrain: @unchecked Sendable {
         guard duplicateDescriptor >= 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
+
+        let statusFlags = fcntl(duplicateDescriptor, F_GETFL)
+        guard statusFlags >= 0 else {
+            let failureErrno = errno
+            _ = Darwin.close(duplicateDescriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failureErrno))
+        }
+        guard fcntl(duplicateDescriptor, F_SETFL, statusFlags | O_NONBLOCK) >= 0 else {
+            let failureErrno = errno
+            _ = Darwin.close(duplicateDescriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failureErrno))
+        }
+
         return makeStream(ownedDescriptor: duplicateDescriptor)
     }
 

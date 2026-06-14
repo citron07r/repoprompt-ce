@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import RepoPrompt
 import XCTest
@@ -61,6 +62,42 @@ final class GitProcessPipeDrainTests: XCTestCase {
         XCTAssertEqual(output, expected)
     }
 
+    func testConsumeReturnsPromptlyWhenWriterRemainsOpenWithoutAvailableBytes() throws {
+        let pipe = Pipe()
+        let originalReadHandle = pipe.fileHandleForReading
+        let originalStatusFlags = fcntl(originalReadHandle.fileDescriptor, F_GETFL)
+        XCTAssertGreaterThanOrEqual(originalStatusFlags, 0)
+
+        let (_, drain) = try GitProcessPipeDrain.makeStream(readingFrom: originalReadHandle)
+        let configuredStatusFlags = fcntl(originalReadHandle.fileDescriptor, F_GETFL)
+        XCTAssertGreaterThanOrEqual(configuredStatusFlags, 0)
+        XCTAssertEqual(
+            configuredStatusFlags & ~O_NONBLOCK,
+            originalStatusFlags & ~O_NONBLOCK
+        )
+        XCTAssertNotEqual(configuredStatusFlags & O_NONBLOCK, 0)
+
+        let consumeResult = TestLockedBool()
+        let consumeCompleted = TestSemaphore()
+        DispatchQueue.global().async {
+            consumeResult.set(drain.consumeAvailableData())
+            consumeCompleted.signal()
+        }
+
+        let waitResult = consumeCompleted.wait(timeout: .now() + 1)
+        if waitResult == .timedOut {
+            pipe.fileHandleForWriting.closeFile()
+            _ = consumeCompleted.wait(timeout: .now() + 5)
+        }
+
+        XCTAssertEqual(waitResult, .success)
+        XCTAssertEqual(consumeResult.value, false)
+        drain.cancel()
+        if waitResult == .success {
+            pipe.fileHandleForWriting.closeFile()
+        }
+    }
+
     func testReadabilityCallbackAfterFinishCannotConsumeOrAppendData() async {
         let (stream, drain) = GitProcessPipeDrain.makeStream()
         let tailData = Data("tail".utf8)
@@ -83,6 +120,23 @@ final class GitProcessPipeDrainTests: XCTestCase {
             result.append(chunk)
         }
         return result
+    }
+}
+
+private final class TestLockedBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Bool?
+
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValue
+    }
+
+    func set(_ value: Bool) {
+        lock.lock()
+        storedValue = value
+        lock.unlock()
     }
 }
 
