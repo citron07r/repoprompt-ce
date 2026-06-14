@@ -904,12 +904,14 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             .store(in: &cancellables)
 
         if let apiSettingsViewModel = promptManager.apiSettingsViewModel {
-            Publishers.MergeMany(
-                apiSettingsViewModel.$isClaudeCodeConnected.dropFirst().map { _ in () },
-                apiSettingsViewModel.$isCodexConnected.dropFirst().map { _ in () },
-                apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () },
-                apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }
-            )
+            Publishers.MergeMany([
+                apiSettingsViewModel.$isClaudeCodeConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$isCodexConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$isOpenCodeConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$isCursorConnected.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$isContextBuilderProviderValidationComplete.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                apiSettingsViewModel.$contextBuilderVerifiedCLIProviders.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            ])
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.handleAgentProviderAvailabilityChanged()
@@ -950,6 +952,21 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         )
     }
 
+    private func resolvedPersistedContextBuilderSelection() -> AgentModelCatalog.NormalizedAgentSelection? {
+        guard let apiSettingsViewModel = promptManager.apiSettingsViewModel,
+              apiSettingsViewModel.isContextBuilderProviderValidationComplete
+        else {
+            return nil
+        }
+        let persisted = settingsManager.persistedGlobalContextBuilderAgentSelection()
+        return AutoRecommendationEngine.resolveContextBuilderSelection(
+            persistedAgentRaw: persisted.agentRaw,
+            persistedModelRaw: persisted.modelRaw,
+            availability: apiSettingsViewModel.contextBuilderRestorationAvailabilityContext,
+            enabledRecommendationProviders: settingsManager.globalRecommendationProviderFilter()
+        )
+    }
+
     private func refreshAvailableAgents() {
         availableAgents = AgentModelCatalog.selectableAgents(availability: agentAvailabilityContext)
     }
@@ -969,7 +986,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
     private func handleAgentProviderAvailabilityChanged() {
         refreshAvailableAgents()
-        let normalized = normalizedSelection(agentRaw: selectedAgent.rawValue, modelRaw: selectedModelRaw)
+        guard let normalized = resolvedPersistedContextBuilderSelection() else { return }
         guard normalized.agent != selectedAgent || normalized.modelRaw.caseInsensitiveCompare(selectedModelRaw) != .orderedSame else {
             return
         }
@@ -1032,6 +1049,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     acpDynamicModelRevision &+= 1
+                    handleAgentProviderAvailabilityChanged()
                     syncSelectedACPModelFromRegistryIfNeeded(for: .openCode)
                 }
             }
@@ -1066,6 +1084,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     acpDynamicModelRevision &+= 1
+                    handleAgentProviderAvailabilityChanged()
                     syncSelectedACPModelFromRegistryIfNeeded(for: .cursor)
                 }
             }
@@ -1158,8 +1177,7 @@ final class ContextBuilderAgentViewModel: ObservableObject {
 
         // Agent/model selection: always from GLOBAL settings (not workspace, not tab)
         // This ensures consistent behavior across all workspaces and tabs
-        let (globalAgentRaw, globalModelRaw) = settingsManager.globalContextBuilderAgentSelection()
-        let normalizedAgentSelection = normalizedSelection(agentRaw: globalAgentRaw, modelRaw: globalModelRaw)
+        let normalizedAgentSelection = resolvedPersistedContextBuilderSelection()
 
         // Load workspace-scoped settings (tokenBudget, enhancementMode, etc.)
         let workspaceSettings = settingsManager.chatSettings(for: manager.activeWorkspace?.id ?? currentWorkspaceID ?? UUID())
@@ -1202,10 +1220,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         // Plan token budget: workspace setting only, defaults to 120k
         planTokenBudget = workspaceSettings.discoveryPlanTokenBudget ?? 120_000
 
-        // Apply agent/model from global settings
-        selectedAgent = normalizedAgentSelection.agent
-        selectedModelRaw = normalizedAgentSelection.modelRaw
-        selectedModel = AgentModel.resolvedModel(forRaw: selectedModelRaw, agentKind: selectedAgent) ?? .defaultModel
+        // Apply agent/model from global settings when a configured provider is currently available.
+        if let normalizedAgentSelection {
+            selectedAgent = normalizedAgentSelection.agent
+            selectedModelRaw = normalizedAgentSelection.modelRaw
+            selectedModel = AgentModel.resolvedModel(forRaw: selectedModelRaw, agentKind: selectedAgent) ?? .defaultModel
+        }
 
         isRestoringState = false
         updateDynamicModelPolling(startCursorPolling: false)
@@ -1261,10 +1281,11 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         mcpResponseType = nil
         // Per-tab clarifying questions state
         pendingAskUser = nil
-        let normalized = normalizedSelection(agentRaw: nil, modelRaw: nil)
-        selectedAgent = normalized.agent
-        selectedModelRaw = normalized.modelRaw
-        selectedModel = AgentModel.resolvedModel(forRaw: normalized.modelRaw, agentKind: normalized.agent) ?? .defaultModel
+        if let normalized = resolvedPersistedContextBuilderSelection() {
+            selectedAgent = normalized.agent
+            selectedModelRaw = normalized.modelRaw
+            selectedModel = AgentModel.resolvedModel(forRaw: normalized.modelRaw, agentKind: normalized.agent) ?? .defaultModel
+        }
         contextBuilderInstructions = ""
         selectedContextBuilderPromptIDs = []
         tokenBudget = ContextBuilderDefaults.discoveryTokenBudget
@@ -1406,8 +1427,10 @@ final class ContextBuilderAgentViewModel: ObservableObject {
     /// Used during workspace switch to initialize agent/model from global settings.
     private func applyGlobalAgentModel() {
         // Agent/model are now GLOBAL (not workspace-scoped)
-        let (globalAgentRaw, globalModelRaw) = settingsManager.globalContextBuilderAgentSelection()
-        let normalized = normalizedSelection(agentRaw: globalAgentRaw, modelRaw: globalModelRaw)
+        guard let normalized = resolvedPersistedContextBuilderSelection() else {
+            refreshAvailableAgents()
+            return
+        }
 
         isRestoringState = true
         selectedAgent = normalized.agent
