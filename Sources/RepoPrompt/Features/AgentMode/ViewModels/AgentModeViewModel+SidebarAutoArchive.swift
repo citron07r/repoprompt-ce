@@ -12,12 +12,12 @@ extension AgentModeViewModel {
     }
 
     func scheduleSidebarAutoArchiveIfReady(reason: SidebarAutoArchiveReason) {
-        guard sessionListCacheReady else { return }
+        guard ownerValidatedSessionListCacheReady else { return }
         scheduleSidebarAutoArchive(reason: reason)
     }
 
     func scheduleSidebarAutoArchive(reason: SidebarAutoArchiveReason) {
-        guard sessionListCacheReady, canRunSidebarAutoArchive, !isApplyingSidebarAutoArchive else { return }
+        guard ownerValidatedSessionListCacheReady, canRunSidebarAutoArchive, !isApplyingSidebarAutoArchive else { return }
         sidebarAutoArchiveTask?.cancel()
         sidebarAutoArchiveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -31,7 +31,7 @@ extension AgentModeViewModel {
         reason: SidebarAutoArchiveReason,
         now: Date = Date()
     ) async -> Set<UUID> {
-        guard sessionListCacheReady, canRunSidebarAutoArchive, !isApplyingSidebarAutoArchive else { return [] }
+        guard ownerValidatedSessionListCacheReady, canRunSidebarAutoArchive, !isApplyingSidebarAutoArchive else { return [] }
         guard let promptManager, workspaceManager?.activeWorkspace != nil else { return [] }
 
         let openTabs = promptManager.currentComposeTabs
@@ -65,8 +65,9 @@ extension AgentModeViewModel {
         if let currentTabID {
             protectedTabIDs.insert(currentTabID)
         }
+        let currentIndex = ownerValidatedSessionIndex
         for row in sidebarRows {
-            let persistedEntry = row.sessionID.flatMap { sessionIndex[$0] }
+            let persistedEntry = row.sessionID.flatMap { currentIndex[$0] }
                 ?? preferredSidebarEntry(for: row.tabID, tabName: row.title)
             if !isComposeTabEligibleForAutomaticStash(row.tabID)
                 || row.isMCPControlled
