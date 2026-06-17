@@ -59,6 +59,17 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(batches[1].sliceEntries, [
             WorkspaceSelectionSliceInput(path: "/tmp/B.swift", ranges: [LineRange(start: 4, end: 8)])
         ])
+        let accounting = try? XCTUnwrap(coordinator.debugContextSnapshot(for: key))
+        XCTAssertEqual(accounting?.acceptedIntentCount, 4)
+        XCTAssertEqual(accounting?.completedIntentCount, 4)
+        XCTAssertEqual(accounting?.canonicalApplyAttemptCount, 2)
+        XCTAssertEqual(accounting?.semanticNoOpApplyCount, 2)
+        XCTAssertEqual(accounting?.semanticNoOpIntentCount, 4)
+        XCTAssertEqual(accounting?.changedApplyCount, 0)
+        XCTAssertEqual(accounting?.rejectedApplyCount, 0)
+        XCTAssertEqual(accounting?.invalidatedIntentCount, 0)
+        XCTAssertEqual(accounting?.mutationSamples.map(\.acceptedIntentCount), [1, 3])
+        XCTAssertEqual(accounting?.sampleOverflowCount, 0)
     }
 
     func testCanonicalIdentityIsConnectionAndRunScopedWhileMirrorsCoalescePerTab() async {
@@ -331,6 +342,23 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                     && $0.target == 1
             })
         }
+
+        let boundedCoordinator = makeCoordinator(recorder: CoordinatorRecorder())
+        let boundedKey = contextKey()
+        for ordinal in 0 ..< 258 {
+            XCTAssertTrue(boundedCoordinator.enqueue(intent: .full(paths: ["/tmp/Bounded-\(ordinal).swift"]), for: boundedKey))
+            let result = await boundedCoordinator.drain(.canonicalSelection, for: boundedKey)
+            XCTAssertEqual(result, .completed)
+        }
+        let bounded = try XCTUnwrap(boundedCoordinator.debugContextSnapshot(for: boundedKey))
+        XCTAssertEqual(bounded.acceptedIntentCount, 258)
+        XCTAssertEqual(bounded.completedIntentCount, 258)
+        XCTAssertEqual(bounded.canonicalApplyAttemptCount, 258)
+        XCTAssertEqual(bounded.semanticNoOpIntentCount, 258)
+        XCTAssertEqual(bounded.mutationSamples.count, 256)
+        XCTAssertEqual(bounded.sampleOverflowCount, 2)
+        XCTAssertEqual(bounded.mutationSamples.first?.ordinal, 3)
+        XCTAssertEqual(bounded.mutationSamples.last?.ordinal, 258)
     }
 
     func testInvalidationDropsPendingWorkBeforeStoredCommit() async {

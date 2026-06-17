@@ -1019,6 +1019,7 @@ final class MCPServerViewModel: ObservableObject {
         ]
     )
     private var cancellables: Set<AnyCancellable> = []
+
     @MainActor
     lazy var readFileAutoSelectionCoordinator = MCPReadFileAutoSelectionCoordinator(
         isContextCurrent: { [weak self] key in
@@ -3278,6 +3279,76 @@ final class MCPServerViewModel: ObservableObject {
         @MainActor
         func setReadFileAutoSelectionPersistenceGateForTesting(_ gate: (() async -> Void)?) {
             readFileAutoSelectionPersistenceWillResolveHandlerForTesting = gate
+        }
+
+        struct DebugReadFileAutoSelectionTarget: @unchecked Sendable {
+            let connectionID: UUID
+            let runID: UUID?
+            let agentSessionID: UUID?
+            let workspaceID: UUID?
+            let tabID: UUID
+            let route: String
+            let bindingGeneration: UInt64
+            let contextKey: MCPReadFileAutoSelectionCoordinator.ContextKey
+        }
+
+        @MainActor
+        func debugResolveReadFileAutoSelectionTargets(
+            targetConnectionID: UUID?,
+            agentSessionID: UUID?,
+            tabID: UUID?,
+            expectedRunID: UUID?
+        ) -> [DebugReadFileAutoSelectionTarget] {
+            tabContextByConnectionID.compactMap { connectionID, context in
+                guard context.windowID == windowID else { return nil }
+                if let targetConnectionID, connectionID != targetConnectionID { return nil }
+                if targetConnectionID == nil {
+                    guard let agentSessionID, let tabID,
+                          context.activeAgentSessionID == agentSessionID,
+                          context.tabID == tabID
+                    else { return nil }
+                }
+                if let expectedRunID, context.runID != expectedRunID { return nil }
+                if let runID = context.runID,
+                   connectionIDByRunID[runID] != connectionID || connectionIDToRunID[connectionID] != runID
+                {
+                    return nil
+                }
+                let key = MCPReadFileAutoSelectionCoordinator.ContextKey(
+                    windowID: context.windowID,
+                    workspaceID: context.workspaceID,
+                    tabID: context.tabID,
+                    route: .bound(connectionID: connectionID, runID: context.runID),
+                    bindingGeneration: context.readFileAutoSelectionGeneration
+                )
+                guard isReadFileAutoSelectionContextCurrent(key) else { return nil }
+                return DebugReadFileAutoSelectionTarget(
+                    connectionID: connectionID,
+                    runID: context.runID,
+                    agentSessionID: context.activeAgentSessionID,
+                    workspaceID: context.workspaceID,
+                    tabID: context.tabID,
+                    route: key.route.diagnosticScope,
+                    bindingGeneration: key.bindingGeneration,
+                    contextKey: key
+                )
+            }.sorted { $0.connectionID.uuidString < $1.connectionID.uuidString }
+        }
+
+        @MainActor
+        func debugReadFileAutoSelectionContextSnapshot(
+            for target: DebugReadFileAutoSelectionTarget
+        ) -> MCPReadFileAutoSelectionCoordinator.DebugContextSnapshot? {
+            guard isReadFileAutoSelectionContextCurrent(target.contextKey) else { return nil }
+            return readFileAutoSelectionCoordinator.debugContextSnapshot(for: target.contextKey)
+        }
+
+        @MainActor
+        func debugDrainReadFileAutoSelection(
+            for target: DebugReadFileAutoSelectionTarget
+        ) async -> MCPReadFileAutoSelectionCoordinator.DebugDrainResult? {
+            guard isReadFileAutoSelectionContextCurrent(target.contextKey) else { return nil }
+            return await readFileAutoSelectionCoordinator.debugDrainCanonical(for: target.contextKey)
         }
 
         @MainActor

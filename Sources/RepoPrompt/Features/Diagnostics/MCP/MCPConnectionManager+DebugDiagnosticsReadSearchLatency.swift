@@ -51,6 +51,174 @@ import RepoPromptShared
             ])
         }
 
+        func debugMCPReadFileAutoSelectionProbeBeginPayload(
+            op: String,
+            arguments: [String: Value]
+        ) async -> CallTool.Result {
+            let windowID: Int
+            switch debugBoundedInt(arguments, "window_id", defaultValue: 0, range: 1 ... Int.max) {
+            case let .value(parsed):
+                windowID = parsed
+            case .defaulted, .invalid:
+                return debugDiagnosticsError(op: op, code: "invalid_params", message: "`window_id` is required and must be a positive integer.")
+            }
+
+            guard let targetConnectionID = debugOptionalUUID(arguments, "target_connection_id", op: op),
+                  let agentSessionID = debugOptionalUUID(arguments, "agent_session_id", op: op),
+                  let tabID = debugOptionalUUID(arguments, "tab_id", op: op),
+                  let expectedRunID = debugOptionalUUID(arguments, "expected_run_id", op: op)
+            else {
+                return debugDiagnosticsError(op: op, code: "invalid_params", message: "Connection, session, tab, and run identifiers must be UUID strings when provided.")
+            }
+
+            let usesConnectionTarget = targetConnectionID != nil
+            let usesSessionTarget = agentSessionID != nil || tabID != nil
+            guard usesConnectionTarget != usesSessionTarget,
+                  usesConnectionTarget || (agentSessionID != nil && tabID != nil)
+            else {
+                return debugDiagnosticsError(
+                    op: op,
+                    code: "invalid_params",
+                    message: "Provide either `target_connection_id`, or both `agent_session_id` and `tab_id`."
+                )
+            }
+
+            let resolved = await MainActor.run { () -> (
+                serverIdentity: ObjectIdentifier,
+                targets: [MCPServerViewModel.DebugReadFileAutoSelectionTarget]
+            )? in
+                guard let window = WindowStatesManager.shared.allWindows.first(where: { $0.windowID == windowID }) else {
+                    return nil
+                }
+                return (
+                    ObjectIdentifier(window.mcpServer),
+                    window.mcpServer.debugResolveReadFileAutoSelectionTargets(
+                        targetConnectionID: targetConnectionID,
+                        agentSessionID: agentSessionID,
+                        tabID: tabID,
+                        expectedRunID: expectedRunID
+                    )
+                )
+            }
+            guard let resolved else {
+                return debugDiagnosticsError(op: op, code: "no_window", message: "No RepoPrompt window matched window_id \(windowID).")
+            }
+            guard resolved.targets.count == 1, let target = resolved.targets.first else {
+                let code = resolved.targets.isEmpty ? "no_target" : "ambiguous_target"
+                return debugDiagnosticsError(
+                    op: op,
+                    code: code,
+                    message: resolved.targets.isEmpty
+                        ? "No current bound read-file auto-selection context matched the requested identity."
+                        : "Multiple current bound read-file auto-selection contexts matched the requested identity."
+                )
+            }
+            guard let baseline = await MainActor.run(body: {
+                WindowStatesManager.shared.allWindows
+                    .first(where: { $0.windowID == windowID && ObjectIdentifier($0.mcpServer) == resolved.serverIdentity })?
+                    .mcpServer.debugReadFileAutoSelectionContextSnapshot(for: target)
+            }) else {
+                return debugDiagnosticsError(op: op, code: "stale_target", message: "The matched auto-selection context became stale before the probe began.")
+            }
+
+            let probeID = UUID()
+            let entry = MCPReadFileAutoSelectionProbeRegistry.Entry(
+                probeID: probeID,
+                createdAt: Date(),
+                windowID: windowID,
+                serverIdentity: resolved.serverIdentity,
+                target: target,
+                baseline: baseline
+            )
+            guard await MCPReadFileAutoSelectionProbeRegistry.shared.insert(entry) else {
+                return debugDiagnosticsError(op: op, code: "probe_capacity", message: "The DEBUG read-file auto-selection probe registry is at its 16-probe capacity.")
+            }
+
+            return debugDiagnosticsResult([
+                "ok": true,
+                "op": op,
+                "probe_id": probeID.uuidString,
+                "window_id": windowID,
+                "connection_id": target.connectionID.uuidString,
+                "run_id": Self.debugOptionalValue(target.runID?.uuidString),
+                "agent_session_id": Self.debugOptionalValue(target.agentSessionID?.uuidString),
+                "workspace_id": Self.debugOptionalValue(target.workspaceID?.uuidString),
+                "tab_id": target.tabID.uuidString,
+                "route": target.route,
+                "binding_generation": target.bindingGeneration,
+                "baseline": readFileAutoSelectionContextPayload(baseline)
+            ])
+        }
+
+        func debugMCPReadFileAutoSelectionProbeDrainPayload(
+            op: String,
+            arguments: [String: Value]
+        ) async -> CallTool.Result {
+            guard let rawProbeID = debugString(arguments, "probe_id"),
+                  let probeID = UUID(uuidString: rawProbeID)
+            else {
+                return debugDiagnosticsError(op: op, code: "invalid_params", message: "`probe_id` is required and must be a UUID string.")
+            }
+            guard let entry = await MCPReadFileAutoSelectionProbeRegistry.shared.take(probeID) else {
+                return debugDiagnosticsError(op: op, code: "unknown_probe", message: "The probe was not found, expired, or already consumed.")
+            }
+
+            let server = await MainActor.run {
+                WindowStatesManager.shared.allWindows
+                    .first(where: {
+                        $0.windowID == entry.windowID && ObjectIdentifier($0.mcpServer) == entry.serverIdentity
+                    })?
+                    .mcpServer
+            }
+            guard let server,
+                  await server.debugReadFileAutoSelectionContextSnapshot(for: entry.target) != nil
+            else {
+                return debugDiagnosticsResult(readFileAutoSelectionStaleProbePayload(op: op, entry: entry))
+            }
+
+            let clock = ContinuousClock()
+            let drainStartedAt = clock.now
+            guard let drain = await server.debugDrainReadFileAutoSelection(for: entry.target) else {
+                return debugDiagnosticsResult(readFileAutoSelectionStaleProbePayload(op: op, entry: entry))
+            }
+            let drainElapsedMS = Self.debugDurationMilliseconds(drainStartedAt.duration(to: clock.now))
+
+            let settleStartedAt = clock.now
+            let settleDeadline = settleStartedAt.advanced(by: .seconds(1))
+            var final = await server.debugReadFileAutoSelectionContextSnapshot(for: entry.target)
+            while let snapshot = final,
+                  snapshot.workerActive || snapshot.pendingWork,
+                  clock.now < settleDeadline
+            {
+                try? await Task.sleep(for: .milliseconds(10))
+                final = await server.debugReadFileAutoSelectionContextSnapshot(for: entry.target)
+            }
+            guard let final else {
+                return debugDiagnosticsResult(readFileAutoSelectionStaleProbePayload(op: op, entry: entry))
+            }
+            let settleElapsedMS = Self.debugDurationMilliseconds(settleStartedAt.duration(to: clock.now))
+            let result = drain.result == .completed ? "completed" : "cancelled"
+            let delta = readFileAutoSelectionDeltaPayload(baseline: entry.baseline, final: final)
+
+            return debugDiagnosticsResult([
+                "ok": true,
+                "op": op,
+                "probe_id": probeID.uuidString,
+                "result": result,
+                "captured_target_sequence": drain.capturedTargetSequence,
+                "drain_elapsed_ms": Self.debugRoundedMS(drainElapsedMS),
+                "settle_elapsed_ms": Self.debugRoundedMS(settleElapsedMS),
+                "completed_through_target": final.completedHighWaterSequence >= drain.capturedTargetSequence,
+                "baseline": readFileAutoSelectionContextPayload(entry.baseline),
+                "final": readFileAutoSelectionContextPayload(final),
+                "delta": delta,
+                "worker_idle": !final.workerActive,
+                "pending_work": final.pendingWork,
+                "waiter_count": final.waiterCount,
+                "sample_overflow_count": debugCounterDelta(final.sampleOverflowCount, entry.baseline.sampleOverflowCount)
+            ])
+        }
+
         func debugMCPReadSearchAdmissionSnapshotPayload(
             op: String,
             arguments: [String: Value]
@@ -512,6 +680,106 @@ import RepoPromptShared
             ] as [String: Any]
         }
 
+        private func readFileAutoSelectionContextPayload(
+            _ snapshot: MCPReadFileAutoSelectionCoordinator.DebugContextSnapshot
+        ) -> [String: Any] {
+            [
+                "accepted_high_water_sequence": snapshot.acceptedHighWaterSequence,
+                "completed_high_water_sequence": snapshot.completedHighWaterSequence,
+                "accepted_intent_count": snapshot.acceptedIntentCount,
+                "completed_intent_count": snapshot.completedIntentCount,
+                "canonical_apply_attempt_count": snapshot.canonicalApplyAttemptCount,
+                "changed_apply_count": snapshot.changedApplyCount,
+                "semantic_noop_apply_count": snapshot.semanticNoOpApplyCount,
+                "rejected_apply_count": snapshot.rejectedApplyCount,
+                "changed_intent_count": snapshot.changedIntentCount,
+                "semantic_noop_intent_count": snapshot.semanticNoOpIntentCount,
+                "rejected_intent_count": snapshot.rejectedIntentCount,
+                "invalidated_intent_count": snapshot.invalidatedIntentCount,
+                "mutation_total_ms": Self.debugRoundedMS(snapshot.mutationTotalMilliseconds),
+                "mutation_samples": snapshot.mutationSamples.map(readFileAutoSelectionMutationSamplePayload),
+                "sample_overflow_count": snapshot.sampleOverflowCount,
+                "worker_active": snapshot.workerActive,
+                "worker_idle": !snapshot.workerActive,
+                "pending_work": snapshot.pendingWork,
+                "waiter_count": snapshot.waiterCount
+            ]
+        }
+
+        private func readFileAutoSelectionMutationSamplePayload(
+            _ sample: MCPReadFileAutoSelectionCoordinator.DebugCanonicalApplySample
+        ) -> [String: Any] {
+            [
+                "ordinal": sample.ordinal,
+                "duration_ms": Self.debugRoundedMS(sample.durationMilliseconds),
+                "outcome": sample.outcome.rawValue,
+                "accepted_intent_count": sample.acceptedIntentCount,
+                "completed_high_water_sequence": sample.completedHighWaterSequence
+            ]
+        }
+
+        private func readFileAutoSelectionDeltaPayload(
+            baseline: MCPReadFileAutoSelectionCoordinator.DebugContextSnapshot,
+            final: MCPReadFileAutoSelectionCoordinator.DebugContextSnapshot
+        ) -> [String: Any] {
+            let acceptedIntentCount = debugCounterDelta(final.acceptedIntentCount, baseline.acceptedIntentCount)
+            let baselineSampleOrdinal = baseline.mutationSamples.last?.ordinal ?? 0
+            let samples = final.mutationSamples
+                .filter { $0.ordinal > baselineSampleOrdinal }
+                .map(readFileAutoSelectionMutationSamplePayload)
+            let mutationTotalMS = max(0, final.mutationTotalMilliseconds - baseline.mutationTotalMilliseconds)
+            return [
+                "accepted_intent_count": acceptedIntentCount,
+                "completed_intent_count": debugCounterDelta(final.completedIntentCount, baseline.completedIntentCount),
+                "canonical_apply_attempt_count": debugCounterDelta(final.canonicalApplyAttemptCount, baseline.canonicalApplyAttemptCount),
+                "changed_apply_count": debugCounterDelta(final.changedApplyCount, baseline.changedApplyCount),
+                "semantic_noop_apply_count": debugCounterDelta(final.semanticNoOpApplyCount, baseline.semanticNoOpApplyCount),
+                "rejected_apply_count": debugCounterDelta(final.rejectedApplyCount, baseline.rejectedApplyCount),
+                "changed_intent_count": debugCounterDelta(final.changedIntentCount, baseline.changedIntentCount),
+                "semantic_noop_intent_count": debugCounterDelta(final.semanticNoOpIntentCount, baseline.semanticNoOpIntentCount),
+                "rejected_intent_count": debugCounterDelta(final.rejectedIntentCount, baseline.rejectedIntentCount),
+                "invalidated_intent_count": debugCounterDelta(final.invalidatedIntentCount, baseline.invalidatedIntentCount),
+                "mutation_total_ms": Self.debugRoundedMS(mutationTotalMS),
+                "mutation_ms_per_accepted_intent": acceptedIntentCount > 0
+                    ? Self.debugRoundedMS(mutationTotalMS / Double(acceptedIntentCount))
+                    : 0,
+                "mutation_samples": samples
+            ]
+        }
+
+        private func readFileAutoSelectionStaleProbePayload(
+            op: String,
+            entry: MCPReadFileAutoSelectionProbeRegistry.Entry
+        ) -> [String: Any] {
+            [
+                "ok": true,
+                "op": op,
+                "probe_id": entry.probeID.uuidString,
+                "result": "stale",
+                "captured_target_sequence": entry.baseline.acceptedHighWaterSequence,
+                "drain_elapsed_ms": 0,
+                "settle_elapsed_ms": 0,
+                "completed_through_target": false,
+                "baseline": readFileAutoSelectionContextPayload(entry.baseline),
+                "final": NSNull(),
+                "delta": [String: Any](),
+                "worker_idle": false,
+                "pending_work": false,
+                "waiter_count": 0,
+                "sample_overflow_count": 0
+            ]
+        }
+
+        private nonisolated func debugCounterDelta(_ final: UInt64, _ baseline: UInt64) -> UInt64 {
+            final >= baseline ? final - baseline : 0
+        }
+
+        private nonisolated static func debugDurationMilliseconds(_ duration: Duration) -> Double {
+            let components = duration.components
+            return Double(components.seconds) * 1000
+                + Double(components.attoseconds) / 1_000_000_000_000_000
+        }
+
         private func readFileAutoSelectionPayload(
             _ snapshot: MCPReadFileAutoSelectionCoordinator.DebugSnapshot
         ) -> [String: Any] {
@@ -765,6 +1033,38 @@ import RepoPromptShared
                 allowed.contains(scalar) ? scalar : replacement
             }
             return String(String.UnicodeScalarView(scalars.prefix(64)))
+        }
+    }
+
+    private actor MCPReadFileAutoSelectionProbeRegistry {
+        struct Entry: @unchecked Sendable {
+            let probeID: UUID
+            let createdAt: Date
+            let windowID: Int
+            let serverIdentity: ObjectIdentifier
+            let target: MCPServerViewModel.DebugReadFileAutoSelectionTarget
+            let baseline: MCPReadFileAutoSelectionCoordinator.DebugContextSnapshot
+        }
+
+        static let shared = MCPReadFileAutoSelectionProbeRegistry()
+        private static let capacity = 16
+        private static let expirySeconds: TimeInterval = 30 * 60
+        private var entries: [UUID: Entry] = [:]
+
+        func insert(_ entry: Entry) -> Bool {
+            pruneExpired(now: entry.createdAt)
+            guard entries.count < Self.capacity else { return false }
+            entries[entry.probeID] = entry
+            return true
+        }
+
+        func take(_ probeID: UUID) -> Entry? {
+            pruneExpired(now: Date())
+            return entries.removeValue(forKey: probeID)
+        }
+
+        private func pruneExpired(now: Date) {
+            entries = entries.filter { now.timeIntervalSince($0.value.createdAt) <= Self.expirySeconds }
         }
     }
 

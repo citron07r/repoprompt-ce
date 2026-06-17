@@ -113,12 +113,69 @@ final class MCPReadFileAutoSelectionCoordinator {
     }
 
     struct CanonicalApplyResult {
-        let mirrorKey: TabMirrorKey?
+        enum Disposition: String {
+            case changed
+            case semanticNoOp
+            case rejected
+        }
 
-        static let unchanged = CanonicalApplyResult(mirrorKey: nil)
+        let mirrorKey: TabMirrorKey?
+        let disposition: Disposition
+
+        init(
+            mirrorKey: TabMirrorKey?,
+            disposition: Disposition? = nil
+        ) {
+            self.mirrorKey = mirrorKey
+            self.disposition = disposition ?? (mirrorKey == nil ? .semanticNoOp : .changed)
+        }
+
+        static let unchanged = CanonicalApplyResult(mirrorKey: nil, disposition: .semanticNoOp)
+        static let rejected = CanonicalApplyResult(mirrorKey: nil, disposition: .rejected)
     }
 
     #if DEBUG
+        enum DebugCanonicalApplyOutcome: String, Equatable {
+            case changed
+            case semanticNoOp = "semantic_noop"
+            case rejected
+            case invalidated
+        }
+
+        struct DebugCanonicalApplySample: Equatable {
+            let ordinal: UInt64
+            let durationMilliseconds: Double
+            let outcome: DebugCanonicalApplyOutcome
+            let acceptedIntentCount: UInt64
+            let completedHighWaterSequence: UInt64
+        }
+
+        struct DebugContextSnapshot: Equatable {
+            let acceptedHighWaterSequence: UInt64
+            let completedHighWaterSequence: UInt64
+            let acceptedIntentCount: UInt64
+            let completedIntentCount: UInt64
+            let canonicalApplyAttemptCount: UInt64
+            let changedApplyCount: UInt64
+            let semanticNoOpApplyCount: UInt64
+            let rejectedApplyCount: UInt64
+            let changedIntentCount: UInt64
+            let semanticNoOpIntentCount: UInt64
+            let rejectedIntentCount: UInt64
+            let invalidatedIntentCount: UInt64
+            let mutationTotalMilliseconds: Double
+            let mutationSamples: [DebugCanonicalApplySample]
+            let sampleOverflowCount: UInt64
+            let workerActive: Bool
+            let pendingWork: Bool
+            let waiterCount: Int
+        }
+
+        struct DebugDrainResult: Equatable {
+            let result: DrainResult
+            let capturedTargetSequence: UInt64
+        }
+
         struct DebugSnapshot: Equatable {
             let canonicalLaneCount: Int
             let canonicalWorkerCount: Int
@@ -140,6 +197,7 @@ final class MCPReadFileAutoSelectionCoordinator {
         var batch: CanonicalBatch
         let lowestSequence: UInt64
         var highestSequence: UInt64
+        var acceptedIntentCount: UInt64
         var lifecycleCorrelation: EditFlowPerf.LifecycleCorrelation?
         let queueWaitState: EditFlowPerf.IntervalState?
     }
@@ -199,7 +257,26 @@ final class MCPReadFileAutoSelectionCoordinator {
     private var invalidatedContexts = Set<ContextKey>()
     private var retiringContexts = Set<ContextKey>()
     #if DEBUG
+        private struct DebugContextAccounting {
+            var acceptedIntentCount: UInt64 = 0
+            var completedIntentCount: UInt64 = 0
+            var canonicalApplyAttemptCount: UInt64 = 0
+            var changedApplyCount: UInt64 = 0
+            var semanticNoOpApplyCount: UInt64 = 0
+            var rejectedApplyCount: UInt64 = 0
+            var changedIntentCount: UInt64 = 0
+            var semanticNoOpIntentCount: UInt64 = 0
+            var rejectedIntentCount: UInt64 = 0
+            var invalidatedIntentCount: UInt64 = 0
+            var mutationTotalMilliseconds: Double = 0
+            var nextSampleOrdinal: UInt64 = 0
+            var mutationSamples: [DebugCanonicalApplySample] = []
+            var sampleOverflowCount: UInt64 = 0
+        }
+
+        private static let debugMutationSampleLimit = 256
         private var canonicalApplyGateForTesting: (() async -> Void)?
+        private var debugAccountingByContext: [ContextKey: DebugContextAccounting] = [:]
     #endif
 
     init(
@@ -244,6 +321,7 @@ final class MCPReadFileAutoSelectionCoordinator {
         if var pending = lane.pending {
             pending.batch.merge(intent)
             pending.highestSequence = sequence
+            pending.acceptedIntentCount &+= 1
             pending.lifecycleCorrelation = lifecycleCorrelation ?? pending.lifecycleCorrelation
             lane.pending = pending
             outcome = "coalesced"
@@ -257,6 +335,7 @@ final class MCPReadFileAutoSelectionCoordinator {
                 batch: CanonicalBatch(intent: intent),
                 lowestSequence: sequence,
                 highestSequence: sequence,
+                acceptedIntentCount: 1,
                 lifecycleCorrelation: lifecycleCorrelation,
                 queueWaitState: EditFlowPerf.begin(
                     EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalQueueWait,
@@ -270,6 +349,9 @@ final class MCPReadFileAutoSelectionCoordinator {
             )
         }
         canonicalLanes[key] = lane
+        #if DEBUG
+            debugAccountingByContext[key, default: DebugContextAccounting()].acceptedIntentCount &+= 1
+        #endif
         scheduleCanonicalWorkerIfNeeded(for: key)
         emitCanonicalDiagnostic(
             .acceptedHighWaterAdvanced,
@@ -371,6 +453,37 @@ final class MCPReadFileAutoSelectionCoordinator {
             canonicalApplyGateForTesting = gate
         }
 
+        func debugContextSnapshot(for key: ContextKey) -> DebugContextSnapshot? {
+            guard let lane = canonicalLanes[key] else { return nil }
+            let accounting = debugAccountingByContext[key] ?? DebugContextAccounting()
+            return DebugContextSnapshot(
+                acceptedHighWaterSequence: lane.acceptedSequence,
+                completedHighWaterSequence: lane.completedSequence,
+                acceptedIntentCount: accounting.acceptedIntentCount,
+                completedIntentCount: accounting.completedIntentCount,
+                canonicalApplyAttemptCount: accounting.canonicalApplyAttemptCount,
+                changedApplyCount: accounting.changedApplyCount,
+                semanticNoOpApplyCount: accounting.semanticNoOpApplyCount,
+                rejectedApplyCount: accounting.rejectedApplyCount,
+                changedIntentCount: accounting.changedIntentCount,
+                semanticNoOpIntentCount: accounting.semanticNoOpIntentCount,
+                rejectedIntentCount: accounting.rejectedIntentCount,
+                invalidatedIntentCount: accounting.invalidatedIntentCount,
+                mutationTotalMilliseconds: accounting.mutationTotalMilliseconds,
+                mutationSamples: accounting.mutationSamples,
+                sampleOverflowCount: accounting.sampleOverflowCount,
+                workerActive: canonicalWorkers.contains(key),
+                pendingWork: lane.pending != nil,
+                waiterCount: lane.waiters.count
+            )
+        }
+
+        func debugDrainCanonical(for key: ContextKey) async -> DebugDrainResult {
+            let target = canonicalLanes[key]?.acceptedSequence ?? 0
+            let result = await drain(.canonicalSelection, for: key)
+            return DebugDrainResult(result: result, capturedTargetSequence: target)
+        }
+
         func debugSnapshot() -> DebugSnapshot {
             DebugSnapshot(
                 canonicalLaneCount: canonicalLanes.count,
@@ -427,6 +540,10 @@ final class MCPReadFileAutoSelectionCoordinator {
 
             var outcome = "invalidated"
             var mirrorTicket: UInt64?
+            #if DEBUG
+                var debugApplyOutcome: DebugCanonicalApplyOutcome?
+                var debugMutationDurationMilliseconds: Double?
+            #endif
             if !invalidatedContexts.contains(key), isContextCurrent(key) {
                 #if DEBUG
                     if let canonicalApplyGateForTesting {
@@ -436,6 +553,10 @@ final class MCPReadFileAutoSelectionCoordinator {
                 // The debug gate models any suspension before mutation. Revalidate identity
                 // afterward so an invalidated or replaced route can never apply stale work.
                 if !invalidatedContexts.contains(key), isContextCurrent(key) {
+                    #if DEBUG
+                        let debugMutationClock = ContinuousClock()
+                        let debugMutationStartedAt = debugMutationClock.now
+                    #endif
                     let result = await EditFlowPerf.$currentLifecycleCorrelation.withValue(queued.lifecycleCorrelation) {
                         await EditFlowPerf.measure(
                             EditFlowPerf.Stage.ReadFile.AutoSelect.canonicalMutation,
@@ -444,17 +565,60 @@ final class MCPReadFileAutoSelectionCoordinator {
                             await applyCanonical(key, queued.batch)
                         }
                     }
-                    if !invalidatedContexts.contains(key), isContextCurrent(key), let mirrorKey = result.mirrorKey {
-                        mirrorTicket = enqueueMirror(
-                            for: mirrorKey,
-                            lifecycleCorrelation: queued.lifecycleCorrelation
+                    #if DEBUG
+                        debugMutationDurationMilliseconds = Self.debugMilliseconds(
+                            debugMutationStartedAt.duration(to: debugMutationClock.now)
                         )
-                        outcome = "changed"
-                    } else if !invalidatedContexts.contains(key), isContextCurrent(key) {
-                        outcome = "unchanged"
+                    #endif
+                    if !invalidatedContexts.contains(key), isContextCurrent(key) {
+                        switch result.disposition {
+                        case .changed:
+                            if let mirrorKey = result.mirrorKey {
+                                mirrorTicket = enqueueMirror(
+                                    for: mirrorKey,
+                                    lifecycleCorrelation: queued.lifecycleCorrelation
+                                )
+                                outcome = "changed"
+                                #if DEBUG
+                                    debugApplyOutcome = .changed
+                                #endif
+                            } else {
+                                outcome = "rejected"
+                                #if DEBUG
+                                    debugApplyOutcome = .rejected
+                                #endif
+                            }
+                        case .semanticNoOp:
+                            outcome = "unchanged"
+                            #if DEBUG
+                                debugApplyOutcome = .semanticNoOp
+                            #endif
+                        case .rejected:
+                            outcome = "rejected"
+                            #if DEBUG
+                                debugApplyOutcome = .rejected
+                            #endif
+                        }
+                    } else {
+                        #if DEBUG
+                            debugApplyOutcome = .invalidated
+                        #endif
                     }
                 }
             }
+            #if DEBUG
+                if let debugApplyOutcome, let debugMutationDurationMilliseconds {
+                    recordDebugCanonicalApply(
+                        for: key,
+                        outcome: debugApplyOutcome,
+                        acceptedIntentCount: queued.acceptedIntentCount,
+                        durationMilliseconds: debugMutationDurationMilliseconds,
+                        completedHighWaterSequence: queued.highestSequence
+                    )
+                } else {
+                    debugAccountingByContext[key, default: DebugContextAccounting()].invalidatedIntentCount &+= queued.acceptedIntentCount
+                }
+            #endif
             EditFlowPerf.lifecycleEvent(
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.canonicalApplyEnded,
                 correlation: queued.lifecycleCorrelation,
@@ -463,15 +627,24 @@ final class MCPReadFileAutoSelectionCoordinator {
             completeCanonicalBatch(
                 for: key,
                 throughSequence: queued.highestSequence,
+                acceptedIntentCount: queued.acceptedIntentCount,
                 mirrorTicket: mirrorTicket
             )
             await Task.yield()
         }
     }
 
-    private func completeCanonicalBatch(for key: ContextKey, throughSequence: UInt64, mirrorTicket: UInt64?) {
+    private func completeCanonicalBatch(
+        for key: ContextKey,
+        throughSequence: UInt64,
+        acceptedIntentCount: UInt64,
+        mirrorTicket: UInt64?
+    ) {
         guard var lane = canonicalLanes[key] else { return }
         lane.completedSequence = max(lane.completedSequence, throughSequence)
+        #if DEBUG
+            debugAccountingByContext[key, default: DebugContextAccounting()].completedIntentCount &+= acceptedIntentCount
+        #endif
         if let mirrorTicket {
             lane.latestRequiredMirrorTicket = max(lane.latestRequiredMirrorTicket ?? 0, mirrorTicket)
         }
@@ -491,6 +664,54 @@ final class MCPReadFileAutoSelectionCoordinator {
             waiter.continuation.resume(returning: .completed(requiredMirrorTicket: lane.latestRequiredMirrorTicket))
         }
     }
+
+    #if DEBUG
+        private func recordDebugCanonicalApply(
+            for key: ContextKey,
+            outcome: DebugCanonicalApplyOutcome,
+            acceptedIntentCount: UInt64,
+            durationMilliseconds: Double,
+            completedHighWaterSequence: UInt64
+        ) {
+            var accounting = debugAccountingByContext[key] ?? DebugContextAccounting()
+            accounting.canonicalApplyAttemptCount &+= 1
+            switch outcome {
+            case .changed:
+                accounting.changedApplyCount &+= 1
+                accounting.changedIntentCount &+= acceptedIntentCount
+            case .semanticNoOp:
+                accounting.semanticNoOpApplyCount &+= 1
+                accounting.semanticNoOpIntentCount &+= acceptedIntentCount
+            case .rejected:
+                accounting.rejectedApplyCount &+= 1
+                accounting.rejectedIntentCount &+= acceptedIntentCount
+            case .invalidated:
+                accounting.rejectedApplyCount &+= 1
+                accounting.invalidatedIntentCount &+= acceptedIntentCount
+            }
+            accounting.mutationTotalMilliseconds += durationMilliseconds
+            accounting.nextSampleOrdinal &+= 1
+            let sample = DebugCanonicalApplySample(
+                ordinal: accounting.nextSampleOrdinal,
+                durationMilliseconds: durationMilliseconds,
+                outcome: outcome,
+                acceptedIntentCount: acceptedIntentCount,
+                completedHighWaterSequence: completedHighWaterSequence
+            )
+            if accounting.mutationSamples.count == Self.debugMutationSampleLimit {
+                accounting.mutationSamples.removeFirst()
+                accounting.sampleOverflowCount &+= 1
+            }
+            accounting.mutationSamples.append(sample)
+            debugAccountingByContext[key] = accounting
+        }
+
+        private nonisolated static func debugMilliseconds(_ duration: Duration) -> Double {
+            let components = duration.components
+            return Double(components.seconds) * 1000
+                + Double(components.attoseconds) / 1_000_000_000_000_000
+        }
+    #endif
 
     @discardableResult
     private func enqueueMirror(
@@ -782,6 +1003,9 @@ final class MCPReadFileAutoSelectionCoordinator {
               canonicalLanes[key]?.waiters.isEmpty != false
         else { return }
         canonicalLanes.removeValue(forKey: key)
+        #if DEBUG
+            debugAccountingByContext.removeValue(forKey: key)
+        #endif
         closingContexts.remove(key)
         invalidatedContexts.remove(key)
         retiringContexts.remove(key)

@@ -89,6 +89,19 @@
             XCTAssertTrue(diagnostics.contains("mcp_read_search_admission_snapshot"))
             XCTAssertTrue(diagnostics.contains("mcp_read_search_admission_configure"))
             XCTAssertTrue(diagnostics.contains("mcp_read_search_content_read_scheduler_snapshot"))
+            XCTAssertTrue(diagnostics.contains("mcp_read_file_auto_selection_probe_begin"))
+            XCTAssertTrue(diagnostics.contains("mcp_read_file_auto_selection_probe_drain"))
+
+            for operation in [
+                "mcp_read_file_auto_selection_probe_begin",
+                "mcp_read_file_auto_selection_probe_drain"
+            ] {
+                XCTAssertEqual(
+                    try sourceFilesContaining(operation),
+                    ["Sources/RepoPrompt/Features/Diagnostics/MCP/MCPConnectionManager+DebugDiagnostics.swift"],
+                    operation
+                )
+            }
 
             let sibling = try source("Sources/RepoPrompt/Features/Diagnostics/MCP/MCPConnectionManager+DebugDiagnosticsReadSearchLatency.swift")
             XCTAssertTrue(sibling.contains("#if DEBUG"))
@@ -116,6 +129,39 @@
             XCTAssertTrue(sibling.contains("cancellation_count"))
             XCTAssertTrue(sibling.contains("interactive_grant_count"))
             XCTAssertTrue(sibling.contains("bulk_grant_count"))
+            for payloadKey in [
+                "captured_target_sequence",
+                "accepted_intent_count",
+                "completed_intent_count",
+                "canonical_apply_attempt_count",
+                "semantic_noop_apply_count",
+                "semantic_noop_intent_count",
+                "mutation_ms_per_accepted_intent",
+                "mutation_samples",
+                "worker_idle",
+                "pending_work",
+                "sample_overflow_count"
+            ] {
+                XCTAssertTrue(sibling.contains("\"\(payloadKey)\""), payloadKey)
+            }
+            XCTAssertTrue(sibling.contains("private actor MCPReadFileAutoSelectionProbeRegistry"))
+            XCTAssertTrue(sibling.contains("private static let capacity = 16"))
+            XCTAssertTrue(sibling.contains("private static let expirySeconds: TimeInterval = 30 * 60"))
+            let coordinator = try source("Sources/RepoPrompt/Infrastructure/MCP/ViewModels/MCPReadFileAutoSelectionCoordinator.swift")
+            XCTAssertTrue(coordinator.contains("#if DEBUG\n        enum DebugCanonicalApplyOutcome"))
+            XCTAssertTrue(coordinator.contains("private static let debugMutationSampleLimit = 256"))
+            XCTAssertTrue(coordinator.contains("func debugDrainCanonical(for key: ContextKey)"))
+            XCTAssertTrue(coordinator.contains("semanticNoOpIntentCount"))
+
+            let server = try source("Sources/RepoPrompt/Infrastructure/MCP/ViewModels/MCPServerViewModel.swift")
+            XCTAssertTrue(server.contains("#if DEBUG\n        @MainActor\n        var readFileAutoSelectionPredecessorDrainWaiterRegisteredHandlerStorageForTesting"))
+            XCTAssertTrue(server.contains("struct DebugReadFileAutoSelectionTarget"))
+            XCTAssertTrue(server.contains("func debugResolveReadFileAutoSelectionTargets("))
+            XCTAssertTrue(server.contains("func debugDrainReadFileAutoSelection("))
+
+            let provider = try source("Sources/RepoPrompt/Infrastructure/MCP/WindowTools/MCPFileToolProvider.swift")
+            XCTAssertFalse(provider.contains("mcp_read_file_auto_selection_probe_"))
+            XCTAssertFalse(provider.contains("debugDrainReadFileAutoSelection"))
         }
 
         func testPerStoreAdmissionDebugConfigurationIsFixedCapacityIdleOnlyAndBounded() async {
@@ -1702,6 +1748,23 @@
 
         private func source(_ relativePath: String) throws -> String {
             try String(contentsOf: RepoRoot.url().appendingPathComponent(relativePath), encoding: .utf8)
+        }
+
+        private func sourceFilesContaining(_ needle: String) throws -> [String] {
+            let root = try RepoRoot.url()
+            let sources = root.appendingPathComponent("Sources", isDirectory: true)
+            guard let enumerator = FileManager.default.enumerator(
+                at: sources,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+            var matches: [String] = []
+            for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+                let contents = try String(contentsOf: fileURL, encoding: .utf8)
+                guard contents.contains(needle) else { continue }
+                matches.append(fileURL.path.replacingOccurrences(of: root.path + "/", with: ""))
+            }
+            return matches.sorted()
         }
     }
 #endif
