@@ -1424,7 +1424,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
             testWindowID: 1,
             testWorkspacePath: FileManager.default.currentDirectoryPath,
             codexControllerFactory: { _, _, _, _, _, _ in codexController },
-            claudeControllerFactory: { _, _, _, _, _, _, _ in
+            claudeControllerFactory: { _, _, _, _, _, _, _, _ in
                 recorder.record("factory:claude")
                 return claudeController
             },

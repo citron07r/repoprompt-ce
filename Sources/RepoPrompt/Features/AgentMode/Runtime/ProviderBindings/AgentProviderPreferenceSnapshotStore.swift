@@ -120,8 +120,11 @@ final class AgentProviderPreferenceSnapshotStore {
             case .providerOverride:
                 ClaudeAgentToolPreferences.PermissionLevel.requireApproval.permissionMode
             }
+            let runtimeTools = claudeRuntimeToolSettings(profile: profile)
             return AgentProviderRuntimePermissionBinding(
-                claudePermissionMode: permissionMode
+                claudePermissionMode: permissionMode,
+                claudeAllowNativeBashTool: runtimeTools.allowNativeBashTool,
+                claudeMCPStrictMode: runtimeTools.mcpStrictMode
             )
         case .openCode:
             let level = effectiveOpenCodePermissionLevel(profile: profile)
@@ -372,11 +375,12 @@ final class AgentProviderPreferenceSnapshotStore {
         selectedModelRaw: String?
     ) -> ClaudeToolSettingsBinding {
         let effortLevel = claudeEffortLevel(selectedAgent: selectedAgent, selectedModelRaw: selectedModelRaw)
+        let runtimeTools = claudeRuntimeToolSettings(profile: profile)
         switch profile {
         case .userConfigured, .providerOverride:
             return ClaudeToolSettingsBinding(
-                bashToolEnabled: ClaudeAgentToolPreferences.bashToolEnabled(defaults: defaults, secureStore: securePermissions),
-                mcpStrictModeEnabled: ClaudeAgentToolPreferences.mcpStrictModeEnabled(defaults: defaults, secureStore: securePermissions),
+                bashToolEnabled: runtimeTools.allowNativeBashTool,
+                mcpStrictModeEnabled: runtimeTools.mcpStrictMode,
                 toolSearchEnabled: ClaudeAgentToolPreferences.toolSearchEnabled(defaults: defaults),
                 effortLevel: effortLevel,
                 agentModePromptDelivery: ClaudeAgentToolPreferences.agentModePromptDelivery(defaults: defaults)
@@ -386,11 +390,31 @@ final class AgentProviderPreferenceSnapshotStore {
             // MCP server is reachable. Search stays available. Effort and prompt-delivery are
             // carried through so runtime behavior for those remains user-configurable.
             return ClaudeToolSettingsBinding(
-                bashToolEnabled: false,
-                mcpStrictModeEnabled: true,
+                bashToolEnabled: runtimeTools.allowNativeBashTool,
+                mcpStrictModeEnabled: runtimeTools.mcpStrictMode,
                 toolSearchEnabled: ClaudeAgentToolPreferences.toolSearchEnabled(defaults: defaults),
                 effortLevel: effortLevel,
                 agentModePromptDelivery: ClaudeAgentToolPreferences.agentModePromptDelivery(defaults: defaults)
+            )
+        }
+    }
+
+    private func claudeRuntimeToolSettings(
+        profile: AgentProviderPermissionProfile
+    ) -> (allowNativeBashTool: Bool, mcpStrictMode: Bool) {
+        switch profile {
+        case .mcpSafeDefaults:
+            (allowNativeBashTool: false, mcpStrictMode: true)
+        case .userConfigured, .providerOverride:
+            (
+                allowNativeBashTool: ClaudeAgentToolPreferences.bashToolEnabled(
+                    defaults: defaults,
+                    secureStore: securePermissions
+                ),
+                mcpStrictMode: ClaudeAgentToolPreferences.mcpStrictModeEnabled(
+                    defaults: defaults,
+                    secureStore: securePermissions
+                )
             )
         }
     }

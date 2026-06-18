@@ -11,7 +11,8 @@ final class ClaudeAgentModeCoordinator {
         _ workspacePath: String?,
         _ runtimeVariant: ClaudeCodeRuntimeVariant,
         _ allowNativeBashTool: Bool?,
-        _ permissionMode: String?
+        _ permissionMode: String?,
+        _ mcpStrictMode: Bool?
     ) -> any NativeAgentRuntimeControlling
 
     /// Closure that waits until the given runID has zero active MCP tool executions.
@@ -201,10 +202,14 @@ final class ClaudeAgentModeCoordinator {
         session.runID = runID
         let launchModelRaw = session.selectedModelRaw
         let runtimeVariant = session.selectedAgent.claudeRuntimeVariant ?? .standard
+        let runtimePermission = effectiveClaudeRuntimePermission(for: session)
         let effectivePermissionMode = effectiveClaudePermissionResolution(
             for: session,
-            selectedModelRaw: launchModelRaw
+            selectedModelRaw: launchModelRaw,
+            runtimePermission: runtimePermission
         ).effectiveMode
+        let effectiveAllowNativeBashTool = runtimePermission.claudeAllowNativeBashTool
+        let effectiveMCPStrictMode = runtimePermission.claudeMCPStrictMode
 
         // If the session's Claude runtime variant or effective permission mode no
         // longer matches the controller, recycle it so the next process launches
@@ -213,8 +218,10 @@ final class ClaudeAgentModeCoordinator {
         // recycle on the next idle call.
         let runtimeVariantChanged = session.claudeControllerRuntimeVariant.map { $0 != runtimeVariant } ?? false
         let permissionModeChanged = session.claudeControllerPermissionMode != effectivePermissionMode
+        let bashToolChanged = session.claudeControllerAllowNativeBashTool != effectiveAllowNativeBashTool
+        let mcpStrictModeChanged = session.claudeControllerMCPStrictMode != effectiveMCPStrictMode
         if let existingController = session.claudeController,
-           runtimeVariantChanged || permissionModeChanged
+           runtimeVariantChanged || permissionModeChanged || bashToolChanged || mcpStrictModeChanged
         {
             guard await !(existingController.hasTurnInFlight) else {
                 return
@@ -240,6 +247,8 @@ final class ClaudeAgentModeCoordinator {
             session.claudeControllerRuntimeVariant = nil
             session.claudeControllerWorkspacePath = nil
             session.claudeControllerPermissionMode = nil
+            session.claudeControllerAllowNativeBashTool = nil
+            session.claudeControllerMCPStrictMode = nil
         }
 
         let runtimeWorkspacePath: String?
@@ -267,6 +276,8 @@ final class ClaudeAgentModeCoordinator {
             session.claudeControllerRuntimeVariant = nil
             session.claudeControllerWorkspacePath = nil
             session.claudeControllerPermissionMode = nil
+            session.claudeControllerAllowNativeBashTool = nil
+            session.claudeControllerMCPStrictMode = nil
         }
 
         if session.claudeController == nil {
@@ -276,12 +287,15 @@ final class ClaudeAgentModeCoordinator {
                 windowID,
                 runtimeWorkspacePath,
                 runtimeVariant,
-                nil,
-                effectivePermissionMode
+                effectiveAllowNativeBashTool,
+                effectivePermissionMode,
+                effectiveMCPStrictMode
             )
             session.claudeControllerRuntimeVariant = runtimeVariant
             session.claudeControllerWorkspacePath = runtimeWorkspacePath
             session.claudeControllerPermissionMode = effectivePermissionMode
+            session.claudeControllerAllowNativeBashTool = effectiveAllowNativeBashTool
+            session.claudeControllerMCPStrictMode = effectiveMCPStrictMode
             if let controller = session.claudeController {
                 await controller.ensureEventsStreamReady()
             }
@@ -296,7 +310,9 @@ final class ClaudeAgentModeCoordinator {
                 runID: runID,
                 model: model,
                 runtimeVariant: runtimeVariant,
-                effectivePermissionMode: effectivePermissionMode
+                effectivePermissionMode: effectivePermissionMode,
+                effectiveAllowNativeBashTool: effectiveAllowNativeBashTool,
+                effectiveMCPStrictMode: effectiveMCPStrictMode
             )
             updateProviderSessionIDIfNeeded(sessionRef.sessionID, for: session)
         } catch {
@@ -315,7 +331,9 @@ final class ClaudeAgentModeCoordinator {
         runID: UUID,
         model: String?,
         runtimeVariant: ClaudeCodeRuntimeVariant,
-        effectivePermissionMode: String
+        effectivePermissionMode: String,
+        effectiveAllowNativeBashTool: Bool?,
+        effectiveMCPStrictMode: Bool?
     ) async throws -> NativeAgentRuntimeSessionRef {
         let existingSessionID = session.providerSessionID
         let systemPromptOverride = agentModeSystemPromptOverride(for: session)
@@ -338,6 +356,8 @@ final class ClaudeAgentModeCoordinator {
             session.claudeControllerRuntimeVariant = nil
             session.claudeControllerWorkspacePath = nil
             session.claudeControllerPermissionMode = nil
+            session.claudeControllerAllowNativeBashTool = nil
+            session.claudeControllerMCPStrictMode = nil
             session.runID = nil
             session.providerSessionID = nil
             session.isDirty = true
@@ -352,13 +372,16 @@ final class ClaudeAgentModeCoordinator {
                 windowID,
                 retryWorkspacePath,
                 runtimeVariant,
-                nil,
-                effectivePermissionMode
+                effectiveAllowNativeBashTool,
+                effectivePermissionMode,
+                effectiveMCPStrictMode
             )
             session.claudeController = freshController
             session.claudeControllerRuntimeVariant = runtimeVariant
             session.claudeControllerWorkspacePath = retryWorkspacePath
             session.claudeControllerPermissionMode = effectivePermissionMode
+            session.claudeControllerAllowNativeBashTool = effectiveAllowNativeBashTool
+            session.claudeControllerMCPStrictMode = effectiveMCPStrictMode
             return try await freshController.startOrResume(
                 existingSessionID: nil,
                 model: model,
@@ -655,6 +678,8 @@ final class ClaudeAgentModeCoordinator {
         session.claudeControllerRuntimeVariant = nil
         session.claudeControllerWorkspacePath = nil
         session.claudeControllerPermissionMode = nil
+        session.claudeControllerAllowNativeBashTool = nil
+        session.claudeControllerMCPStrictMode = nil
         session.runID = nil
         session.pendingSupersedingTurnCompletions = 0
         session.claudeSupersedingProtectedTurnIDs.removeAll()
@@ -739,6 +764,8 @@ final class ClaudeAgentModeCoordinator {
         session.claudeControllerRuntimeVariant = nil
         session.claudeControllerWorkspacePath = nil
         session.claudeControllerPermissionMode = nil
+        session.claudeControllerAllowNativeBashTool = nil
+        session.claudeControllerMCPStrictMode = nil
         session.runID = nil
         session.pendingSupersedingTurnCompletions = 0
         session.claudeSupersedingProtectedTurnIDs.removeAll()
@@ -848,12 +875,15 @@ final class ClaudeAgentModeCoordinator {
         toolHandler(for: session).handleProviderToolEvent(event, session: session)
     }
 
-    private func requestedClaudePermissionMode(for session: AgentModeViewModel.TabSession) -> String {
+    private func effectiveClaudeRuntimePermission(for session: AgentModeViewModel.TabSession) -> AgentProviderRuntimePermissionBinding {
         viewModel?.providerBindingService.runtimePermission(
             for: session.selectedAgent,
             profile: session.permissionProfile
-        ).claudePermissionMode
-            ?? session.permissionProfile.claudePermissionMode
+        ) ?? AgentProviderRuntimePermissionBinding(
+            claudePermissionMode: session.permissionProfile.claudePermissionMode,
+            claudeAllowNativeBashTool: session.permissionProfile == .mcpSafeDefaults ? false : nil,
+            claudeMCPStrictMode: session.permissionProfile == .mcpSafeDefaults ? true : nil
+        )
     }
 
     private func unsupportedAutoFallback(
@@ -864,10 +894,12 @@ final class ClaudeAgentModeCoordinator {
 
     private func effectiveClaudePermissionResolution(
         for session: AgentModeViewModel.TabSession,
-        selectedModelRaw: String
+        selectedModelRaw: String,
+        runtimePermission: AgentProviderRuntimePermissionBinding? = nil
     ) -> ClaudeAgentToolPreferences.PermissionModeResolution {
         ClaudeAgentToolPreferences.resolvePermissionMode(
-            requestedMode: requestedClaudePermissionMode(for: session),
+            requestedMode: (runtimePermission ?? effectiveClaudeRuntimePermission(for: session)).claudePermissionMode
+                ?? session.permissionProfile.claudePermissionMode,
             agentKind: session.selectedAgent,
             selectedModelRaw: selectedModelRaw,
             unsupportedAutoFallback: unsupportedAutoFallback(for: session)

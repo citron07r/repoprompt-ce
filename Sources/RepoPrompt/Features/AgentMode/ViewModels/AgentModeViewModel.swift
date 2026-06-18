@@ -54,7 +54,8 @@ final class AgentModeViewModel: ObservableObject {
         _ workspacePath: String?,
         _ runtimeVariant: ClaudeCodeRuntimeVariant,
         _ allowNativeBashTool: Bool?,
-        _ permissionMode: String?
+        _ permissionMode: String?,
+        _ mcpStrictMode: Bool?
     ) -> any NativeAgentRuntimeControlling
     typealias HeadlessProviderFactory = (_ agent: AgentProviderKind, _ modelString: String?) -> HeadlessAgentProvider
     typealias ACPProviderFactory = (_ agent: AgentProviderKind, _ modelString: String?) -> (any ACPAgentProvider)?
@@ -1345,12 +1346,14 @@ final class AgentModeViewModel: ObservableObject {
         workspacePath: String?,
         runtimeVariant: ClaudeCodeRuntimeVariant,
         allowNativeBashTool: Bool?,
-        permissionMode: String?
+        permissionMode: String?,
+        mcpStrictMode: Bool?
     ) -> any NativeAgentRuntimeControlling {
         let coreConfig = ClaudeCodeAgentConfig.agentMode(
             runtimeVariant: runtimeVariant,
             permissionMode: permissionMode,
-            allowNativeBashTool: allowNativeBashTool
+            allowNativeBashTool: allowNativeBashTool,
+            mcpStrictMode: mcpStrictMode
         )
         let runtimeConfig = ClaudeCompatiblePluginBridge.runtimeConfig(from: coreConfig, mode: .agentMode)
         return ClaudeCompatibleNativeSessionAdapter(runtimeConfig: runtimeConfig) {
@@ -1468,7 +1471,7 @@ final class AgentModeViewModel: ObservableObject {
                 expectedMCPClientName: AgentProviderKind.codexExec.mcpClientNameHint
             )
         }
-        let claudeControllerFactory: ClaudeAgentModeCoordinator.ClaudeControllerFactory = { runID, tabID, windowID, workspacePath, runtimeVariant, allowNativeBashTool, permissionMode in
+        let claudeControllerFactory: ClaudeAgentModeCoordinator.ClaudeControllerFactory = { runID, tabID, windowID, workspacePath, runtimeVariant, allowNativeBashTool, permissionMode, mcpStrictMode in
             Self.makeClaudeCompatibleNativeController(
                 runID: runID,
                 tabID: tabID,
@@ -1476,7 +1479,8 @@ final class AgentModeViewModel: ObservableObject {
                 workspacePath: workspacePath,
                 runtimeVariant: runtimeVariant,
                 allowNativeBashTool: allowNativeBashTool,
-                permissionMode: permissionMode
+                permissionMode: permissionMode,
+                mcpStrictMode: mcpStrictMode
             )
         }
         headlessProviderFactory = Self.defaultHeadlessProviderFactory
@@ -1601,7 +1605,7 @@ final class AgentModeViewModel: ObservableObject {
             skillCatalog: AgentSkillCatalog? = nil,
             codexControllerFactory: @escaping CodexControllerFactory,
             codexControllerFactoryWithComputerUse: CodexControllerFactoryWithComputerUse? = nil,
-            claudeControllerFactory: @escaping ClaudeControllerFactory = { runID, tabID, windowID, workspacePath, runtimeVariant, allowNativeBashTool, permissionMode in
+            claudeControllerFactory: @escaping ClaudeControllerFactory = { runID, tabID, windowID, workspacePath, runtimeVariant, allowNativeBashTool, permissionMode, mcpStrictMode in
                 AgentModeViewModel.makeClaudeCompatibleNativeController(
                     runID: runID,
                     tabID: tabID,
@@ -1609,7 +1613,8 @@ final class AgentModeViewModel: ObservableObject {
                     workspacePath: workspacePath,
                     runtimeVariant: runtimeVariant,
                     allowNativeBashTool: allowNativeBashTool,
-                    permissionMode: permissionMode
+                    permissionMode: permissionMode,
+                    mcpStrictMode: mcpStrictMode
                 )
             },
             headlessProviderFactory: @escaping HeadlessProviderFactory = { agent, modelString in

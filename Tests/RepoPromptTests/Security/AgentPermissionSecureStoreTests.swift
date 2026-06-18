@@ -136,6 +136,46 @@ final class AgentPermissionSecureStoreTests: XCTestCase {
         XCTAssertEqual(binding.codexTools?.bashToolEnabled, true)
     }
 
+    @MainActor
+    func testClaudeSafeManagedRuntimeBindingForcesLaunchToolFlags() throws {
+        let suiteName = "AgentPermissionSecureStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let secureStrings = FakeSecurePlainStringStore()
+        secureStrings.plainValues[AgentPermissionSecureDomain.claude.storageKey] = try encode(
+            SecureClaudePermissionDocument(
+                permissionModeRaw: ClaudeAgentToolPreferences.PermissionLevel.fullAccess.permissionMode,
+                bashToolEnabled: true,
+                mcpStrictModeEnabled: false
+            )
+        )
+        let secureStore = makeStore(secureStrings: secureStrings)
+        let snapshots = AgentProviderPreferenceSnapshotStore(
+            defaults: defaults,
+            securePermissions: secureStore,
+            codexMCPServerEntries: { [] }
+        )
+
+        let binding = snapshots.controlsBinding(
+            selectedAgent: .claudeCode,
+            selectedModelRaw: AgentModel.claudeSonnet.rawValue,
+            permissionProfile: .mcpSafeDefaults,
+            isSubagent: true,
+            externallyManagedReason: nil
+        )
+
+        XCTAssertEqual(
+            binding.runtimePermission.claudePermissionMode,
+            ClaudeAgentToolPreferences.PermissionLevel.requireApproval.permissionMode
+        )
+        XCTAssertEqual(binding.runtimePermission.claudeAllowNativeBashTool, false)
+        XCTAssertEqual(binding.runtimePermission.claudeMCPStrictMode, true)
+        XCTAssertEqual(binding.claudeTools?.bashToolEnabled, false)
+        XCTAssertEqual(binding.claudeTools?.mcpStrictModeEnabled, true)
+    }
+
     func testSuccessfulResetPersistsProductDefaultsAcrossRelaunch() throws {
         let secureStrings = FakeSecurePlainStringStore()
         let key = AgentPermissionSecureDomain.codex.storageKey
