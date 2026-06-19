@@ -300,10 +300,13 @@ final class SettingsJSONOnlyPersistenceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temp) }
         let fileURL = temp.appendingPathComponent("Settings/globalSettings.json")
         let fileStore = GlobalSettingsFileStore(fileURL: fileURL)
-        let store = try GlobalSettingsStore(
-            defaults: XCTUnwrap(UserDefaults(suiteName: "SettingsJSONOnlyPersistenceTests.\(UUID().uuidString)")),
-            fileStore: fileStore
-        )
+        try fileStore.save(GlobalSettingsDocument(
+            scalarPreferences: GlobalScalarPreferences(ui: .init(showTooltips: false))
+        ))
+        let suiteName = "SettingsJSONOnlyPersistenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = GlobalSettingsStore(defaults: defaults, fileStore: fileStore)
         let before = try String(contentsOf: fileURL, encoding: .utf8)
 
         XCTAssertFalse(store.showDatesInMessageTimestamps())

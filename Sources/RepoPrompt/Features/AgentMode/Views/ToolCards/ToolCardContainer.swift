@@ -70,7 +70,6 @@ struct ToolCardContainer<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.showDatesInMessageTimestamps) private var showDatesInMessageTimestamps
 
     init(
         iconName: String,
@@ -205,7 +204,7 @@ struct ToolCardContainer<Content: View>: View {
                 if let headerTrailingView {
                     headerTrailingView
                 } else if showsTimestamp, let timestamp {
-                    Text(formattedTime(timestamp))
+                    MessageTimestampText(date: timestamp)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary.opacity(0.7))
                 }
@@ -230,7 +229,7 @@ struct ToolCardContainer<Content: View>: View {
                 if let headerTrailingView {
                     headerTrailingView
                 } else if showsTimestamp, let timestamp {
-                    Text(formattedTime(timestamp))
+                    MessageTimestampText(date: timestamp)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary.opacity(0.7))
                 }
@@ -289,13 +288,6 @@ struct ToolCardContainer<Content: View>: View {
         }
     }
 
-    private func formattedTime(_ date: Date) -> String {
-        MessageTimestampFormatter.string(
-            from: date,
-            includeDateContext: showDatesInMessageTimestamps
-        )
-    }
-
     private var debugRenderStatePreference: [UUID: AgentToolCardRenderState] {
         guard let debugItemID,
               let debugToolName,
@@ -331,7 +323,6 @@ struct StaticToolCardContainer<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.showDatesInMessageTimestamps) private var showDatesInMessageTimestamps
 
     init(
         iconName: String,
@@ -414,7 +405,7 @@ struct StaticToolCardContainer<Content: View>: View {
             if let headerTrailingView {
                 headerTrailingView
             } else if showsTimestamp, let timestamp {
-                Text(formattedTime(timestamp))
+                MessageTimestampText(date: timestamp)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.7))
             }
@@ -430,13 +421,6 @@ struct StaticToolCardContainer<Content: View>: View {
         default:
             BubbleColors.toolResultBackground(colorScheme: colorScheme)
         }
-    }
-
-    private func formattedTime(_ date: Date) -> String {
-        MessageTimestampFormatter.string(
-            from: date,
-            includeDateContext: showDatesInMessageTimestamps
-        )
     }
 }
 

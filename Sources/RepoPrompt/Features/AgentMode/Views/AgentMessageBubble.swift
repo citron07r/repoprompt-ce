@@ -26,7 +26,6 @@ private struct MessageFooterStrip: View {
     @State private var showCopied = false
     @State private var isHoveringHandoff = false
     @State private var showHandoffPopover = false
-    @Environment(\.showDatesInMessageTimestamps) private var showDatesInMessageTimestamps
     @ObservedObject private var fontScale = FontScaleManager.shared
     private var fontPreset: FontScalePreset {
         fontScale.preset
@@ -54,14 +53,9 @@ private struct MessageFooterStrip: View {
     }
 
     private var timestampText: some View {
-        Text(
-            MessageTimestampFormatter.string(
-                from: timestamp,
-                includeDateContext: showDatesInMessageTimestamps
-            )
-        )
-        .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
-        .foregroundColor(.secondary.opacity(0.7))
+        MessageTimestampText(date: timestamp)
+            .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
+            .foregroundColor(.secondary.opacity(0.7))
     }
 
     @ViewBuilder
@@ -191,7 +185,6 @@ struct AgentMessageBubble: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.agentRecentAssistantItemIDs) private var recentAssistantItemIDs
     @Environment(\.agentMessageRuntimeFooterByItemID) private var runtimeFooterByItemID
-    @Environment(\.showDatesInMessageTimestamps) private var showDatesInMessageTimestamps
     @ObservedObject private var fontScale = FontScaleManager.shared
     @State private var isStartingCodexManagedLogin = false
     @State private var codexManagedLoginFeedback: String?
@@ -529,7 +522,7 @@ struct AgentMessageBubble: View {
 
                         Spacer()
 
-                        Text(formattedTimestamp)
+                        MessageTimestampText(date: item.timestamp)
                             .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
                             .foregroundColor(.secondary)
                     }
@@ -578,7 +571,7 @@ struct AgentMessageBubble: View {
 
                         Spacer()
 
-                        Text(formattedTimestamp)
+                        MessageTimestampText(date: item.timestamp)
                             .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
                             .foregroundColor(.secondary)
                     }
@@ -784,7 +777,7 @@ struct AgentMessageBubble: View {
 
                     Spacer()
 
-                    Text(formattedTimestamp)
+                    MessageTimestampText(date: item.timestamp)
                         .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
                         .foregroundColor(.secondary.opacity(0.7))
                 }
@@ -931,17 +924,10 @@ struct AgentMessageBubble: View {
     // MARK: - Helper Views
 
     private var timestampView: some View {
-        Text(formattedTimestamp)
+        MessageTimestampText(date: item.timestamp)
             .font(fontPreset.swiftUIFont(sizeAtNormal: 10))
             .foregroundColor(.secondary.opacity(0.7))
             .padding(.horizontal, 4)
-    }
-
-    private var formattedTimestamp: String {
-        MessageTimestampFormatter.string(
-            from: item.timestamp,
-            includeDateContext: showDatesInMessageTimestamps
-        )
     }
 
     private var shouldShowCodexManagedLoginAction: Bool {

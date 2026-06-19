@@ -25,7 +25,7 @@ enum MessageTimestampFormatter {
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now)),
            calendar.isDate(date, inSameDayAs: yesterday)
         {
-            return "\(yesterdayLabel(for: date, relativeTo: now, calendar: calendar, locale: locale)) \(time)"
+            return "\(cache.relativeDayLabel(-1, calendar: calendar, locale: locale)) \(time)"
         }
 
         if isSameCalendarWeek(date, now, calendar: calendar) {
@@ -44,20 +44,6 @@ enum MessageTimestampFormatter {
         let rhsComponents = calendar.dateComponents([.weekOfYear, .yearForWeekOfYear], from: rhs)
         return lhsComponents.weekOfYear == rhsComponents.weekOfYear
             && lhsComponents.yearForWeekOfYear == rhsComponents.yearForWeekOfYear
-    }
-
-    private static func yesterdayLabel(
-        for date: Date,
-        relativeTo now: Date,
-        calendar: Calendar,
-        locale: Locale
-    ) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.calendar = calendar
-        formatter.locale = locale
-        formatter.dateTimeStyle = .named
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now).localizedCapitalized
     }
 
     private static func formatted(
@@ -82,6 +68,28 @@ enum MessageTimestampFormatter {
 private final class MessageTimestampFormatterCache: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedFormatters: [CacheKey: DateFormatter] = [:]
+    private var cachedRelativeFormatters: [RelativeCacheKey: RelativeDateTimeFormatter] = [:]
+
+    func relativeDayLabel(_ dayOffset: Int, calendar: Calendar, locale: Locale) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let key = RelativeCacheKey(calendar: calendar, localeIdentifier: locale.identifier)
+        let formatter: RelativeDateTimeFormatter
+        if let cached = cachedRelativeFormatters[key] {
+            formatter = cached
+        } else {
+            let created = RelativeDateTimeFormatter()
+            created.calendar = calendar
+            created.locale = locale
+            created.dateTimeStyle = .named
+            created.unitsStyle = .full
+            cachedRelativeFormatters[key] = created
+            formatter = created
+        }
+        let label = formatter.localizedString(from: DateComponents(day: dayOffset))
+        return String(label.prefix(1)).uppercased(with: locale) + String(label.dropFirst())
+    }
 
     func string(
         from date: Date,
@@ -159,6 +167,22 @@ private final class MessageTimestampFormatterCache: @unchecked Sendable {
         init(format: String, isTemplate: Bool, calendar: Calendar, localeIdentifier: String) {
             self.format = format
             self.isTemplate = isTemplate
+            calendarIdentifier = calendar.identifier
+            timeZoneIdentifier = calendar.timeZone.identifier
+            self.localeIdentifier = localeIdentifier
+            firstWeekday = calendar.firstWeekday
+            minimumDaysInFirstWeek = calendar.minimumDaysInFirstWeek
+        }
+    }
+
+    private struct RelativeCacheKey: Hashable {
+        let calendarIdentifier: Calendar.Identifier
+        let timeZoneIdentifier: String
+        let localeIdentifier: String
+        let firstWeekday: Int
+        let minimumDaysInFirstWeek: Int
+
+        init(calendar: Calendar, localeIdentifier: String) {
             calendarIdentifier = calendar.identifier
             timeZoneIdentifier = calendar.timeZone.identifier
             self.localeIdentifier = localeIdentifier

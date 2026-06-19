@@ -11,8 +11,6 @@ struct AgentLogEntryRowView: View {
     let entry: AgentLogEntry
     var style: AgentLogRowStyle = .regular
 
-    @Environment(\.showDatesInMessageTimestamps) private var showDatesInMessageTimestamps
-
     var body: some View {
         HStack(alignment: .top, spacing: style == .compact ? 6 : 8) {
             Image(systemName: icon)
@@ -27,7 +25,7 @@ struct AgentLogEntryRowView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(timestamp)
+            MessageTimestampText(date: entry.timestamp)
                 .font(.caption2)
                 .foregroundColor(.secondary.opacity(0.7))
                 .monospacedDigit()
@@ -42,13 +40,6 @@ struct AgentLogEntryRowView: View {
             return String(entry.message.dropFirst("Using tool: ".count))
         }
         return entry.message
-    }
-
-    private var timestamp: String {
-        MessageTimestampFormatter.string(
-            from: entry.timestamp,
-            includeDateContext: showDatesInMessageTimestamps
-        )
     }
 
     private var icon: String {
