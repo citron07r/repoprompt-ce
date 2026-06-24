@@ -5770,23 +5770,8 @@ final class MCPServerViewModel: ObservableObject {
         for context: TabContextSnapshot,
         includeCodemapPathsWhenSelectedUsage: Bool
     ) -> StoredSelection {
-        let base = context.selection
-        guard includeCodemapPathsWhenSelectedUsage,
-              effectiveMCPCodeMapUsage(promptVM.codeMapUsage) == .selected,
-              !base.autoCodemapPaths.isEmpty
-        else { return base }
-
-        var selectedPaths = StoredSelectionPathNormalization.standardizedPaths(base.selectedPaths)
-        var existingSelected = Set(selectedPaths)
-        for path in StoredSelectionPathNormalization.standardizedPaths(base.autoCodemapPaths) where existingSelected.insert(path).inserted {
-            selectedPaths.append(path)
-        }
-        return StoredSelection(
-            selectedPaths: selectedPaths,
-            autoCodemapPaths: base.autoCodemapPaths,
-            slices: base.slices,
-            codemapAutoEnabled: base.codemapAutoEnabled
-        )
+        _ = includeCodemapPathsWhenSelectedUsage
+        return context.selection
     }
 
     @MainActor
@@ -5967,16 +5952,14 @@ final class MCPServerViewModel: ObservableObject {
     func selectionSnapshot() async throws -> (selected: [WorkspaceFileRecord], codemap: [WorkspaceFileRecord], slices: [UUID: [LineRange]], autoEnabled: Bool) {
         let selection = try await storedSelectionForCurrentTabContext(includeCodemapPathsWhenSelectedUsage: false)
         let selectedPaths = StoredSelectionPathNormalization.standardizedPaths(selection.selectedPaths)
-        let codemapPaths = StoredSelectionPathNormalization.standardizedPaths(selection.autoCodemapPaths)
-        let allPaths = selectedPaths + codemapPaths
-        let resolved = await promptVM.workspaceFileContextStore.lookupFiles(atPaths: allPaths, profile: .mcpSelection, rootScope: .allLoaded)
+        let resolved = await promptVM.workspaceFileContextStore.lookupFiles(atPaths: selectedPaths, profile: .mcpSelection, rootScope: .allLoaded)
         var sliceSnapshot: [UUID: [LineRange]] = [:]
         for (path, ranges) in StoredSelectionPathNormalization.standardizedSlices(selection.slices) {
             if let file = resolved[path] { sliceSnapshot[file.id] = ranges }
         }
         return (
             selected: selectedPaths.compactMap { resolved[$0] },
-            codemap: codemapPaths.compactMap { resolved[$0] },
+            codemap: [],
             slices: sliceSnapshot,
             autoEnabled: selection.codemapAutoEnabled
         )

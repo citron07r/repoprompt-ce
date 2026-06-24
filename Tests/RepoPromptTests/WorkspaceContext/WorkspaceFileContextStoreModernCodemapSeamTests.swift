@@ -804,7 +804,8 @@ final class WorkspaceFileContextStoreModernCodemapSeamTests: XCTestCase {
             selectionGraphQueryBudgetPolicy: .init(
                 maximumTargetCount: 100,
                 maximumResolutionCount: 100,
-                maximumReferenceFailureCount: 2
+                maximumReferenceFailureCount: 100,
+                maximumByteCount: 521
             )
         )
 
@@ -849,10 +850,40 @@ final class WorkspaceFileContextStoreModernCodemapSeamTests: XCTestCase {
         let nPlusOne = await store.queryCodemapSelectionGraph(nPlusOneQuery)
         XCTAssertEqual(
             nPlusOne,
-            .budget(.referenceFailureLimit(attempted: 3, limit: 2))
+            .budget(.byteLimit(attempted: 522, limit: 521))
         )
         let afterNPlusOneMaterializations = await graphProbe.materializedQueryResultCount()
         XCTAssertEqual(afterNPlusOneMaterializations - afterNMaterializations, 2)
+
+        let automaticSources = tickets.map {
+            WorkspaceCodemapAutomaticSelectionSourceIdentity(
+                rootEpoch: $0.rootEpoch,
+                fileID: $0.fileID,
+                catalogGeneration: $0.catalogGeneration
+            )
+        }
+        let beforeAutomaticN = await graphProbe.materializedQueryResultCount()
+        let automaticN = try await store.resolveAutomaticCodemapSelection(
+            sources: Array(automaticSources.prefix(2)),
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(automaticN.roots.count, 2)
+        let afterAutomaticN = await graphProbe.materializedQueryResultCount()
+        XCTAssertEqual(afterAutomaticN - beforeAutomaticN, 2)
+
+        let automaticNPlusOne = try await store.resolveAutomaticCodemapSelection(
+            sources: automaticSources,
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertTrue(automaticNPlusOne.roots.isEmpty)
+        XCTAssertTrue(automaticNPlusOne.targets.isEmpty)
+        XCTAssertNil(automaticNPlusOne.publicationReceipt)
+        XCTAssertEqual(
+            automaticNPlusOne.aggregateCoverage,
+            .budget(.byteLimit(attempted: 522, limit: 521))
+        )
+        let afterAutomaticNPlusOne = await graphProbe.materializedQueryResultCount()
+        XCTAssertEqual(afterAutomaticNPlusOne - afterAutomaticN, 2)
 
         for loaded in loadedRoots {
             await store.unloadRoot(id: loaded.id)
@@ -1748,6 +1779,1627 @@ final class WorkspaceFileContextStoreModernCodemapSeamTests: XCTestCase {
         XCTAssertNil(route)
     }
 
+    func testAutomaticSelectionResolvesSameRootTargetsFromCurrentCatalog() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "struct Source { let target: Target }\n",
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+        let target = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Target.swift" })
+
+        for file in [source, target] {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        let sourceIdentity = try XCTUnwrap(identities.first)
+        let providerCount = fixture.providerAccessCount.value
+        let buildCount = fixture.buildCount.value
+        let manifestReadCount = fixture.manifestReadCount.value
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: identities,
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(result.roots.count, 1)
+        XCTAssertEqual(result.targets.map(\.fileID), [target.id])
+        XCTAssertEqual(result.targets.first?.rootEpoch, sourceIdentity.rootEpoch)
+        XCTAssertEqual(result.targets.first?.catalogGeneration, sourceIdentity.catalogGeneration)
+        XCTAssertEqual(result.targets.first?.logicalPath.displayPath, "repository/Sources/Target.swift")
+        XCTAssertEqual(
+            result.roots.first?.coverage,
+            .partial([.graph(.definitionUniverseIncomplete)])
+        )
+        XCTAssertEqual(fixture.providerAccessCount.value, providerCount)
+        XCTAssertEqual(fixture.buildCount.value, buildCount)
+        XCTAssertEqual(fixture.manifestReadCount.value, manifestReadCount)
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionDoesNotResolveForeignOnlyDefinition() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRoot = try firstRepository.makeRepository(
+            named: "first",
+            files: [
+                "Sources/Source.swift": """
+                protocol SourceProtocol {
+                    func value() -> ForeignDefinition
+                }
+                """
+            ]
+        )
+        let secondRoot = try secondRepository.makeRepository(
+            named: "second",
+            files: [
+                "Sources/ForeignDefinition.swift": "struct ForeignDefinition {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let store = fixture.makeStore()
+        let firstLoaded = try await store.loadRoot(path: firstRoot.path)
+        let secondLoaded = try await store.loadRoot(path: secondRoot.path)
+        let firstFiles = await store.files(inRoot: firstLoaded.id)
+        let secondFiles = await store.files(inRoot: secondLoaded.id)
+        let firstFile = try XCTUnwrap(firstFiles.first)
+        let secondFile = try XCTUnwrap(secondFiles.first)
+        for file in [firstFile, secondFile] {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [firstFile.id],
+            rootScope: .visibleWorkspace
+        )
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: identities,
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertFalse(result.targets.contains { $0.fileID == secondFile.id })
+        XCTAssertEqual(result.roots.first?.rootEpoch.rootID, firstLoaded.id)
+        await store.unloadRoot(id: firstLoaded.id)
+        await store.unloadRoot(id: secondLoaded.id)
+    }
+
+    func testAutomaticSelectionQueriesTwoRootsIndependentlyAndMergesAtResponseBoundary() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRoot = try firstRepository.makeRepository(
+            named: "first",
+            files: [
+                "Sources/Source.swift": """
+                protocol FirstSource {
+                    func value() -> FirstTarget
+                }
+                """,
+                "Sources/Target.swift": "struct FirstTarget {}\n"
+            ]
+        )
+        let secondRoot = try secondRepository.makeRepository(
+            named: "second",
+            files: [
+                "Sources/Source.swift": """
+                protocol SecondSource {
+                    func value() -> SecondTarget
+                }
+                """,
+                "Sources/Target.swift": "struct SecondTarget {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        var loadedRoots: [WorkspaceRootRecord] = []
+        var sourceIDs: [UUID] = []
+        var targetIDs = Set<UUID>()
+        for root in [firstRoot, secondRoot] {
+            let loaded = try await store.loadRoot(path: root.path)
+            loadedRoots.append(loaded)
+            let files = await store.files(inRoot: loaded.id)
+            let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+            let target = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Target.swift" })
+            sourceIDs.append(source.id)
+            targetIDs.insert(target.id)
+            for file in [source, target] {
+                let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+                _ = try await readyResult(settledResult(store: store, ticket: ticket))
+            }
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: Array(sourceIDs.reversed()),
+            rootScope: .visibleWorkspace
+        )
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: identities,
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(result.roots.count, 2)
+        XCTAssertEqual(Set(result.targets.map(\.fileID)), targetIDs)
+        XCTAssertEqual(Set(result.roots.map(\.rootEpoch.rootID)), Set(loadedRoots.map(\.id)))
+        for rootResult in result.roots {
+            XCTAssertTrue(rootResult.targets.allSatisfy { $0.rootEpoch == rootResult.rootEpoch })
+        }
+        XCTAssertEqual(graphProbe.factoryCount, 2)
+        for loaded in loadedRoots {
+            await store.unloadRoot(id: loaded.id)
+        }
+    }
+
+    func testAutomaticSelectionReportsMissingPendingUnavailableAndStaleSourcesWithoutNewWork() async throws {
+        let resolutionGate = ModernCodemapResolutionGate()
+        let fixture = try ModernCodemapStoreFixture(name: #function, resolutionGate: resolutionGate)
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: ["Sources/Pending.swift": "struct Pending {}\n"]
+        )
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await resolutionGate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let file = try XCTUnwrap(files.first)
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [file.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        let pending = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+        let resolutionEntered = await resolutionGate.waitUntilEntered()
+        XCTAssertTrue(resolutionEntered)
+        let missing = WorkspaceCodemapAutomaticSelectionSourceIdentity(
+            rootEpoch: identity.rootEpoch,
+            fileID: UUID(),
+            catalogGeneration: identity.catalogGeneration
+        )
+        let stale = WorkspaceCodemapAutomaticSelectionSourceIdentity(
+            rootEpoch: identity.rootEpoch,
+            fileID: file.id,
+            catalogGeneration: identity.catalogGeneration &+ 1
+        )
+        let providerCount = fixture.providerAccessCount.value
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity, missing, stale],
+            rootScope: .visibleWorkspace
+        )
+
+        let issues = try XCTUnwrap(result.roots.first?.sourceIssues)
+        XCTAssertTrue(issues.contains(.pending(identity, pending)))
+        XCTAssertTrue(issues.contains(.notCataloged(missing)))
+        XCTAssertTrue(issues.contains(.staleCatalogGeneration(
+            stale,
+            currentCatalogGeneration: identity.catalogGeneration
+        )))
+        XCTAssertEqual(fixture.providerAccessCount.value, providerCount)
+        XCTAssertEqual(graphProbe.factoryCount, 0)
+        await resolutionGate.release()
+        _ = try await settledResult(store: store, ticket: pending)
+
+        let plainRoot = try fixture.makePlainRoot(files: [
+            "Sources/Unavailable.swift": "struct Unavailable {}\n"
+        ])
+        let plainLoaded = try await store.loadRoot(path: plainRoot.path)
+        let plainFiles = await store.files(inRoot: plainLoaded.id)
+        let plainFile = try XCTUnwrap(plainFiles.first)
+        let plainIdentities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [plainFile.id],
+            rootScope: .visibleWorkspace
+        )
+        let plainIdentity = try XCTUnwrap(plainIdentities.first)
+        let plainTicket = try await pendingTicket(store.requestCodemapArtifact(forFileID: plainFile.id))
+        let unavailable = try await settledResult(store: store, ticket: plainTicket)
+        guard case let .unavailable(unavailableReason) = unavailable else {
+            return XCTFail("Expected non-Git demand to become unavailable.")
+        }
+        let unavailableResult = try await store.resolveAutomaticCodemapSelection(
+            sources: [plainIdentity],
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(
+            unavailableResult.roots.first?.sourceIssues,
+            [.unavailable(plainIdentity, unavailableReason)]
+        )
+        await store.unloadRoot(id: loaded.id)
+        await store.unloadRoot(id: plainLoaded.id)
+    }
+
+    func testAutomaticSelectionRejectsSourceOutsideRequestedRootScopeBeforeGraphQuery() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRoot = try firstRepository.makeRepository(
+            named: "first",
+            files: ["Sources/First.swift": "struct First {}\n"]
+        )
+        let secondRoot = try secondRepository.makeRepository(
+            named: "second",
+            files: ["Sources/Second.swift": "struct Second {}\n"]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function)
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let firstLoaded = try await store.loadRoot(path: firstRoot.path)
+        let secondLoaded = try await store.loadRoot(path: secondRoot.path)
+        let firstFiles = await store.files(inRoot: firstLoaded.id)
+        let firstFile = try XCTUnwrap(firstFiles.first)
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [firstFile.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        let secondOnlyScope = WorkspaceLookupRootScope.sessionBoundWorkspace(
+            canonicalRootPaths: [secondRoot.path],
+            physicalRootPaths: []
+        )
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: secondOnlyScope
+        )
+
+        XCTAssertEqual(result.targets, [])
+        XCTAssertEqual(result.roots.first?.sourceIssues, [.outsideRootScope(identity)])
+        XCTAssertEqual(result.roots.first?.coverage, .unavailable(.noReadySources))
+        XCTAssertEqual(graphProbe.factoryCount, 0)
+        await store.unloadRoot(id: firstLoaded.id)
+        await store.unloadRoot(id: secondLoaded.id)
+    }
+
+    func testAutomaticSelectionRootReloadDropsOldTargets() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": """
+                protocol SourceProtocol {
+                    func target() -> Target
+                }
+                """,
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore()
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        for file in files {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+        let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        let beforeReload = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertFalse(beforeReload.targets.isEmpty)
+
+        await store.unloadRoot(id: loaded.id)
+        let reloaded = try await store.loadRoot(path: root.path)
+        let afterReload = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertTrue(afterReload.targets.isEmpty)
+        XCTAssertEqual(afterReload.roots.first?.coverage, .stale(.rootEpochNotCurrent(identity.rootEpoch)))
+        await store.unloadRoot(id: reloaded.id)
+    }
+
+    func testAutomaticSelectionOmitsTargetWhoseGenerationBecomesStale() async throws {
+        let queryGate = ModernCodemapArmableSuspensionGate()
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": """
+                protocol SourceProtocol {
+                    func target() -> Target
+                }
+                """,
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await queryGate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(automaticSelectionQueryHook: { _ in
+            await queryGate.enterIfArmedAndWait()
+        })
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+        let target = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Target.swift" })
+        var targetTicket: WorkspaceCodemapArtifactDemandTicket?
+        for file in [source, target] {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+            if file.id == target.id { targetTicket = ticket }
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        let current = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(current.targets.map(\.fileID), [target.id])
+        await queryGate.arm()
+        let task = Task {
+            try await store.resolveAutomaticCodemapSelection(
+                sources: [identity],
+                rootScope: .visibleWorkspace
+            )
+        }
+        let queryEntered = await queryGate.waitUntilEntered()
+        XCTAssertTrue(queryEntered)
+        let unwrappedTargetTicket = try XCTUnwrap(targetTicket)
+        let targetCancelled = await store.cancelCodemapArtifactDemand(unwrappedTargetTicket)
+        XCTAssertTrue(targetCancelled)
+        await queryGate.release()
+        let result = try await task.value
+
+        XCTAssertTrue(result.targets.isEmpty)
+        guard case let .staleGeneration(rootEpoch, fileID, _) = result.roots.first?.targetIssues.first else {
+            return XCTFail("Expected the stale target generation to be reported: \(result)")
+        }
+        XCTAssertEqual(rootEpoch, identity.rootEpoch)
+        XCTAssertEqual(fileID, target.id)
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionDropsResultWhenSourceChangesAfterGraphQuery() async throws {
+        let queryGate = ModernCodemapArmableSuspensionGate()
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "struct Source { let target: Target }\n",
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await queryGate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(automaticSelectionQueryHook: { _ in
+            await queryGate.enterIfArmedAndWait()
+        })
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+        var sourceTicket: WorkspaceCodemapArtifactDemandTicket?
+        for file in files {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+            if file.id == source.id { sourceTicket = ticket }
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        await queryGate.arm()
+        let task = Task {
+            try await store.resolveAutomaticCodemapSelection(
+                sources: [identity],
+                rootScope: .visibleWorkspace
+            )
+        }
+        let queryEntered = await queryGate.waitUntilEntered()
+        XCTAssertTrue(queryEntered)
+        let ticket = try XCTUnwrap(sourceTicket)
+        let cancelled = await store.cancelCodemapArtifactDemand(ticket)
+        XCTAssertTrue(cancelled)
+        await queryGate.release()
+        let result = try await task.value
+
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertEqual(
+            result.roots.first?.coverage,
+            .stale(.graph(.currentness(identity.rootEpoch)))
+        )
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionRetriesWhenPendingSourceBecomesReadyDuringGraphAwait() async throws {
+        let pendingPublicationGate = ModernCodemapArmableSuspensionGate()
+        let queryGate = ModernCodemapArmableSuspensionGate()
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Ready.swift": "struct Ready { let missing: Missing }\n",
+                "Sources/Pending.swift": "struct Pending {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function)
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await pendingPublicationGate.release()
+            await queryGate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(
+            selectionGraphFactory: graphProbe.factory,
+            readyPublicationHook: { _ in
+                await pendingPublicationGate.enterIfArmedAndWait()
+            },
+            automaticSelectionQueryHook: { _ in
+                await queryGate.enterIfArmedAndWait()
+            }
+        )
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let readyFile = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Ready.swift"
+        })
+        let pendingFile = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Pending.swift"
+        })
+        let readyTicket = try await pendingTicket(store.requestCodemapArtifact(
+            forFileID: readyFile.id
+        ))
+        _ = try await readyResult(settledResult(store: store, ticket: readyTicket))
+        let graphPublished = await graphProbe.waitUntilPublished(rootEpoch: readyTicket.rootEpoch)
+        XCTAssertTrue(graphPublished)
+
+        await pendingPublicationGate.arm()
+        let pendingTicket = try await pendingTicket(store.requestCodemapArtifact(
+            forFileID: pendingFile.id
+        ))
+        let publicationEntered = await pendingPublicationGate.waitUntilEntered()
+        XCTAssertTrue(publicationEntered)
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [readyFile.id, pendingFile.id],
+            rootScope: .visibleWorkspace
+        )
+        await queryGate.arm()
+        let task = Task {
+            try await store.resolveAutomaticCodemapSelection(
+                sources: identities,
+                rootScope: .visibleWorkspace
+            )
+        }
+        let queryEntered = await queryGate.waitUntilEntered()
+        XCTAssertTrue(queryEntered)
+
+        await pendingPublicationGate.release()
+        _ = try await readyResult(settledResult(store: store, ticket: pendingTicket))
+        await queryGate.release()
+        let result = try await task.value
+
+        XCTAssertFalse(result.roots.flatMap(\.sourceIssues).contains {
+            if case .pending = $0 { return true }
+            return false
+        })
+        XCTAssertFalse(result.roots.contains {
+            if case .stale(.sourceStateChanged(_)) = $0.coverage { return true }
+            return false
+        })
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionResnapshotsScopeChangeBetweenRootPartitions() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRoot = try firstRepository.makeRepository(
+            named: "first",
+            files: ["Sources/Source.swift": "struct First { let missing: Missing }\n"]
+        )
+        let secondRoot = try secondRepository.makeRepository(
+            named: "second",
+            files: ["Sources/Source.swift": "struct Second { let missing: Missing }\n"]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function)
+        let queryGate = ModernCodemapRootSuspensionGate()
+        addTeardownBlock {
+            await queryGate.release()
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let store = fixture.makeStore(automaticSelectionQueryHook: { rootEpoch in
+            await queryGate.enterAndWait(rootEpoch)
+        })
+        var loadedRoots: [WorkspaceRootRecord] = []
+        var fileIDs: [UUID] = []
+        for root in [firstRoot, secondRoot] {
+            let loaded = try await store.loadRoot(path: root.path)
+            loadedRoots.append(loaded)
+            let files = await store.files(inRoot: loaded.id)
+            let file = try XCTUnwrap(files.first)
+            fileIDs.append(file.id)
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: fileIDs,
+            rootScope: .visibleWorkspace
+        )
+        let task = Task {
+            try await store.resolveAutomaticCodemapSelection(
+                sources: identities,
+                rootScope: .visibleWorkspace
+            )
+        }
+        let entered = await queryGate.waitUntilEntered()
+        let enteredRootEpoch = try XCTUnwrap(entered)
+        let removedRoot = try XCTUnwrap(loadedRoots.first {
+            $0.id != enteredRootEpoch.rootID
+        })
+        await store.unloadRoot(id: removedRoot.id)
+        await queryGate.release()
+        let result = try await task.value
+
+        let removedResult = try XCTUnwrap(result.roots.first {
+            $0.rootEpoch.rootID == removedRoot.id
+        })
+        XCTAssertEqual(
+            removedResult.coverage,
+            .stale(.rootEpochNotCurrent(removedResult.rootEpoch))
+        )
+        XCTAssertTrue(removedResult.targets.isEmpty)
+        for loaded in loadedRoots where loaded.id != removedRoot.id {
+            await store.unloadRoot(id: loaded.id)
+        }
+    }
+
+    func testAutomaticSelectionLaterRootBudgetDiscardsEarlierTargetsAndReceipt() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRootURL = try firstRepository.makeRepository(
+            named: "first",
+            files: [
+                "Sources/Source.swift": "protocol FirstSource { var target: FirstTarget { get } }\n",
+                "Sources/Target.swift": "struct FirstTarget {}\n"
+            ]
+        )
+        let secondRootURL = try secondRepository.makeRepository(
+            named: "second",
+            files: [
+                "Sources/Source.swift": "protocol SecondSource { var target: SecondTarget { get } }\n",
+                "Sources/Target.swift": "struct SecondTarget {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphQueryBudgetPolicy: .init(
+            maximumTargetCount: 1,
+            maximumResolutionCount: 100,
+            maximumReferenceFailureCount: 100
+        ))
+        var loadedRoots: [WorkspaceRootRecord] = []
+        var sourceIDs: [UUID] = []
+        for rootURL in [firstRootURL, secondRootURL] {
+            let loaded = try await store.loadRoot(path: rootURL.path)
+            loadedRoots.append(loaded)
+            let files = await store.files(inRoot: loaded.id)
+            for file in files {
+                let ticket = try await pendingTicket(
+                    store.requestCodemapArtifact(forFileID: file.id)
+                )
+                _ = try await readyResult(settledResult(store: store, ticket: ticket))
+            }
+            try sourceIDs.append(XCTUnwrap(files.first {
+                $0.standardizedRelativePath == "Sources/Source.swift"
+            }).id)
+        }
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: sourceIDs,
+            rootScope: .visibleWorkspace
+        )
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: identities,
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertTrue(result.roots.isEmpty)
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertNil(result.publicationReceipt)
+        guard case let .budget(reason) = result.aggregateCoverage else {
+            return XCTFail("Expected aggregate target budget")
+        }
+        XCTAssertEqual(reason, .targetLimit(attempted: 2, limit: 1))
+        for root in loadedRoots {
+            await store.unloadRoot(id: root.id)
+        }
+    }
+
+    func testAutomaticSelectionReturnsTypedBudgetAndBusyCoverage() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": """
+                protocol SourceProtocol {
+                    func first() -> FirstTarget
+                    func second() -> SecondTarget
+                }
+                """,
+                "Sources/First.swift": "struct FirstTarget {}\n",
+                "Sources/Second.swift": "struct SecondTarget {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let budgetStore = fixture.makeStore(selectionGraphQueryBudgetPolicy: .init(
+            maximumTargetCount: 1,
+            maximumResolutionCount: 100,
+            maximumReferenceFailureCount: 100
+        ))
+        let loaded = try await budgetStore.loadRoot(path: root.path)
+        let files = await budgetStore.files(inRoot: loaded.id)
+        for file in files {
+            let ticket = try await pendingTicket(budgetStore.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: budgetStore, ticket: ticket))
+        }
+        let source = try XCTUnwrap(files.first { $0.standardizedRelativePath == "Sources/Source.swift" })
+        let identities = await budgetStore.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+        let budgetResult = try await budgetStore.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertTrue(budgetResult.roots.isEmpty)
+        XCTAssertTrue(budgetResult.targets.isEmpty)
+        XCTAssertNil(budgetResult.publicationReceipt)
+        XCTAssertEqual(
+            budgetResult.aggregateCoverage,
+            .budget(.targetLimit(attempted: 2, limit: 1))
+        )
+        await budgetStore.unloadRoot(id: loaded.id)
+
+        let buildGate = ModernCodemapSelectionGraphBuildGate()
+        let busyFixture = try ModernCodemapStoreFixture(
+            name: #function + "-busy",
+            syntheticGraphArtifacts: true
+        )
+        let graphProbe = ModernCodemapSelectionGraphProbe(buildGate: buildGate)
+        addTeardownBlock {
+            buildGate.releaseAll()
+            await busyFixture.shutdown()
+        }
+        let busyStore = busyFixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let busyLoaded = try await busyStore.loadRoot(path: root.path)
+        let busyFiles = await busyStore.files(inRoot: busyLoaded.id)
+        let busySource = try XCTUnwrap(busyFiles.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let busyTicket = try await pendingTicket(busyStore.requestCodemapArtifact(forFileID: busySource.id))
+        _ = try await readyResult(settledResult(store: busyStore, ticket: busyTicket))
+        XCTAssertNotNil(buildGate.waitUntilFirstBlocked())
+        let busyIdentities = await busyStore.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [busySource.id],
+            rootScope: .visibleWorkspace
+        )
+        let busyIdentity = try XCTUnwrap(busyIdentities.first)
+        let busyResult = try await busyStore.resolveAutomaticCodemapSelection(
+            sources: [busyIdentity],
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(
+            busyResult.roots.first?.coverage,
+            .busy(.runtime(rootEpoch: busyIdentity.rootEpoch, reason: .rebuilding))
+        )
+        buildGate.releaseAll()
+        await busyStore.unloadRoot(id: busyLoaded.id)
+    }
+
+    func testAutomaticSelectionAccountingOverflowFailsClosedWithoutReceipt() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": """
+                protocol SourceProtocol {
+                    func first() -> FirstTarget
+                    func second() -> SecondTarget
+                }
+                """,
+                "Sources/First.swift": "struct FirstTarget {}\n",
+                "Sources/Second.swift": "struct SecondTarget {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(
+            selectionGraphQueryBudgetPolicy: .init(
+                maximumTargetCount: 1,
+                maximumResolutionCount: 100,
+                maximumReferenceFailureCount: 100
+            ),
+            automaticSelectionAccountingMaximum: 1
+        )
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        for file in files {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+        let source = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: identities,
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(result.roots, [])
+        XCTAssertEqual(result.targets, [])
+        XCTAssertNil(result.publicationReceipt)
+        XCTAssertEqual(result.aggregateCoverage, .budget(.accountingOverflow))
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    @MainActor
+    func testAutomaticSelectionTimeoutRetainsProjectionAndReadinessRetryRecovers() async throws {
+        let publicationGate = ModernCodemapArmableSuspensionGate()
+        let publishedTickets = ModernCodemapLockedValues<WorkspaceCodemapArtifactDemandTicket>()
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "struct Source { let target: Target }\n",
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock {
+            await publicationGate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(
+            selectionGraphFactory: graphProbe.factory,
+            readyPublicationHook: { ticket in
+                publishedTickets.append(ticket)
+                await publicationGate.enterIfArmedAndWait()
+            }
+        )
+        let manager = WorkspaceFilesViewModel(
+            workspaceFileContextStore: store,
+            automaticCodemapSelectionRequestPolicy: .init(
+                maximumReadinessRounds: 1,
+                initialBackoffMilliseconds: 1,
+                maximumBackoffMilliseconds: 1,
+                maximumTotalWait: .milliseconds(1)
+            ),
+            automaticCodemapSelectionWaiter: .init { _ in }
+        )
+        addTeardownBlock { @MainActor in
+            await manager.unloadAllRootFolders()
+        }
+        await manager.setCodeScanEnabled(false)
+        let workspace = WorkspaceModel(name: #function, repoPaths: [root.path])
+        try await manager.loadFolder(at: root, for: workspace)
+        let materializedSource = await manager.materializeFileForUserInput(
+            root.appendingPathComponent("Sources/Source.swift").path,
+            profile: .mcpRead
+        )
+        let source = try XCTUnwrap(materializedSource)
+        let materializedTarget = await manager.materializeFileForUserInput(
+            root.appendingPathComponent("Sources/Target.swift").path,
+            profile: .mcpRead
+        )
+        let target = try XCTUnwrap(materializedTarget)
+
+        let targetTicket = try await pendingTicket(store.requestCodemapArtifact(forFileID: target.id))
+        _ = try await readyResult(settledResult(store: store, ticket: targetTicket))
+        let targetGraphPublished = await graphProbe.waitUntilPublished(rootEpoch: targetTicket.rootEpoch)
+        XCTAssertTrue(targetGraphPublished)
+
+        manager.selectFileForTesting(source)
+        manager.setAutoCodemapFilesForTesting([target])
+        await publicationGate.arm()
+        await manager.flushAutoCodemapSyncNowIfNeeded()
+        XCTAssertEqual(manager.autoCodemapFiles.map(\.id), [target.id])
+
+        let publicationEntered = await publicationGate.waitUntilEntered()
+        XCTAssertTrue(publicationEntered)
+        let sourceTicket = try XCTUnwrap(publishedTickets.values.last)
+        await publicationGate.release()
+        _ = try await readyResult(settledResult(store: store, ticket: sourceTicket))
+        let sourceGraphPublished = await graphProbe.waitUntilPublished(rootEpoch: sourceTicket.rootEpoch)
+        XCTAssertTrue(sourceGraphPublished)
+
+        manager.handleAutomaticCodemapReadinessForTesting(
+            rootID: source.rootIdentifier,
+            rootPath: source.standardizedRootFolderPath
+        )
+        await manager.waitForAutoCodemapSyncForTesting()
+        XCTAssertEqual(manager.autoCodemapFiles.map(\.id), [target.id])
+        await manager.unloadAllRootFolders()
+    }
+
+    func testAutomaticSelectionGraphAdmissionReleaseEmitsReadinessAndRetrySucceeds() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let blockerRoot = try repositoryFixture.makeRepository(
+            named: "blocker",
+            files: ["Sources/Blocker.swift": "struct Blocker {}\n"]
+        )
+        let selectionRoot = try repositoryFixture.makeRepository(
+            named: "selection",
+            files: [
+                "Sources/Source.swift": "struct Source { let target: Target }\n",
+                "Sources/Target.swift": "struct Target {}\n"
+            ]
+        )
+        let buildGate = ModernCodemapSelectionGraphBuildGate()
+        let graphProbe = ModernCodemapSelectionGraphProbe(
+            buildGate: buildGate,
+            admissionPolicy: .init(
+                maximumActiveReservationCount: 1,
+                maximumReservedBindingCount: 100_000
+            )
+        )
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        addTeardownBlock {
+            buildGate.releaseAll()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let blocker = try await store.loadRoot(path: blockerRoot.path)
+        let selection = try await store.loadRoot(path: selectionRoot.path)
+        let blockerFiles = await store.files(inRoot: blocker.id)
+        let blockerFile = try XCTUnwrap(blockerFiles.first)
+        let blockerTicket = try await pendingTicket(
+            store.requestCodemapArtifact(forFileID: blockerFile.id)
+        )
+        _ = try await readyResult(settledResult(store: store, ticket: blockerTicket))
+        let blockerGeneration = try XCTUnwrap(buildGate.waitUntilFirstBlocked())
+
+        let selectionFiles = await store.files(inRoot: selection.id)
+        let source = try XCTUnwrap(selectionFiles.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let target = try XCTUnwrap(selectionFiles.first {
+            $0.standardizedRelativePath == "Sources/Target.swift"
+        })
+        for file in [source, target] {
+            let ticket = try await pendingTicket(store.requestCodemapArtifact(forFileID: file.id))
+            _ = try await readyResult(settledResult(store: store, ticket: ticket))
+        }
+
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionPolicy: .init(
+                maximumReadinessRounds: 1,
+                initialBackoffMilliseconds: 1,
+                maximumBackoffMilliseconds: 1,
+                maximumTotalWait: .milliseconds(1)
+            ),
+            automaticSelectionWaiter: .init { _ in }
+        )
+        let initial = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        guard case .busy = initial.aggregateCoverage else {
+            return XCTFail("Expected graph admission to report busy")
+        }
+
+        let updates = await store.codemapUpdates()
+        let readiness = Task {
+            for await event in updates where
+                event.rootID == selection.id && event.automaticSelectionReadinessChanged
+            {
+                return true
+            }
+            return false
+        }
+        buildGate.release(generation: blockerGeneration)
+        let readinessObserved = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await readiness.value }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return false
+            }
+            let observed = await group.next() ?? false
+            group.cancelAll()
+            readiness.cancel()
+            return observed
+        }
+        XCTAssertTrue(readinessObserved)
+        XCTAssertNotNil(buildGate.waitUntilBlocked(after: blockerGeneration))
+        buildGate.releaseAll()
+
+        let retried = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+        switch retried.aggregateCoverage {
+        case .complete, .partial:
+            XCTAssertNotNil(retried.publicationReceipt)
+        case .pending, .unavailable, .stale, .busy, .budget:
+            XCTFail("Expected readiness-triggered retry to succeed")
+        }
+        await store.unloadRoot(id: selection.id)
+        await store.unloadRoot(id: blocker.id)
+    }
+
+    func testAutomaticSelectionWithoutExistingDemandPerformsNoIOOrArtifactWork() async throws {
+        let fixture = try ModernCodemapStoreFixture(name: #function)
+        let root = try fixture.makePlainRoot(files: [
+            "Sources/Source.swift": "struct Source {}\n"
+        ])
+        let graphProbe = ModernCodemapSelectionGraphProbe()
+        addTeardownBlock { await fixture.shutdown() }
+        let store = fixture.makeStore(selectionGraphFactory: graphProbe.factory)
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let file = try XCTUnwrap(files.first)
+        let identities = await store.codemapAutomaticSelectionSourceIdentities(
+            forFileIDs: [file.id],
+            rootScope: .visibleWorkspace
+        )
+        let identity = try XCTUnwrap(identities.first)
+
+        let result = try await store.resolveAutomaticCodemapSelection(
+            sources: [identity],
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(result.roots.first?.sourceIssues, [.notDemanded(identity)])
+        XCTAssertEqual(result.roots.first?.coverage, .unavailable(.noReadySources))
+        XCTAssertEqual(fixture.providerAccessCount.value, 0)
+        XCTAssertEqual(fixture.runtimeFactoryCount.value, 0)
+        XCTAssertEqual(fixture.engineFactoryCount.value, 0)
+        XCTAssertEqual(fixture.manifestReadCount.value, 0)
+        XCTAssertEqual(fixture.buildCount.value, 0)
+        XCTAssertEqual(graphProbe.factoryCount, 0)
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionRetriesBusySourceTwiceThenBecomesReady() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Setup.swift": "struct Setup {}\n",
+                "Sources/Source.swift": "struct Source {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        let demandInvocations = ModernCodemapLockedCounter()
+        let waits = ModernCodemapLockedCounter()
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(demandResultHook: { _, result in
+            demandInvocations.increment()
+            if demandInvocations.value == 3 || demandInvocations.value == 4 {
+                return .busy(retryAfterMilliseconds: 1)
+            }
+            return result
+        })
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let setup = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Setup.swift"
+        })
+        let source = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let setupTicket = try await pendingTicket(
+            store.requestCodemapArtifact(forFileID: setup.id)
+        )
+        _ = try await readyResult(settledResult(store: store, ticket: setupTicket))
+        let warmSourceTicket = try await pendingTicket(
+            store.requestCodemapArtifact(forFileID: source.id)
+        )
+        _ = try await readyResult(settledResult(store: store, ticket: warmSourceTicket))
+        _ = await store.cancelCodemapArtifactDemand(warmSourceTicket)
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionPolicy: .init(
+                maximumReadinessRounds: 6,
+                initialBackoffMilliseconds: 400,
+                maximumBackoffMilliseconds: 400,
+                maximumTotalWait: .seconds(2)
+            ),
+            automaticSelectionWaiter: .init { duration in
+                waits.increment()
+                try await Task.sleep(for: duration)
+            }
+        )
+
+        let result = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(demandInvocations.value, 5)
+        XCTAssertGreaterThanOrEqual(waits.value, 2)
+        XCTAssertNotNil(result.publicationReceipt)
+        switch result.aggregateCoverage {
+        case .complete, .partial:
+            break
+        case .pending, .unavailable, .stale, .busy, .budget:
+            XCTFail("Expected publishable coverage after busy retries")
+        }
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionBusySourceExhaustionStopsAtConfiguredBounds() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Setup.swift": "struct Setup {}\n",
+                "Sources/Source.swift": "struct Source {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        let demandInvocations = ModernCodemapLockedCounter()
+        let waits = ModernCodemapLockedCounter()
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore(demandResultHook: { _, result in
+            demandInvocations.increment()
+            if demandInvocations.value <= 2 { return result }
+            return .busy(retryAfterMilliseconds: 1)
+        })
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let setup = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Setup.swift"
+        })
+        let source = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let setupTicket = try await pendingTicket(
+            store.requestCodemapArtifact(forFileID: setup.id)
+        )
+        _ = try await readyResult(settledResult(store: store, ticket: setupTicket))
+        let warmSourceTicket = try await pendingTicket(
+            store.requestCodemapArtifact(forFileID: source.id)
+        )
+        _ = try await readyResult(settledResult(store: store, ticket: warmSourceTicket))
+        _ = await store.cancelCodemapArtifactDemand(warmSourceTicket)
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionPolicy: .init(
+                maximumReadinessRounds: 6,
+                initialBackoffMilliseconds: 400,
+                maximumBackoffMilliseconds: 400,
+                maximumTotalWait: .seconds(2)
+            ),
+            automaticSelectionWaiter: .init { duration in
+                waits.increment()
+                try await Task.sleep(for: duration)
+            }
+        )
+
+        let result = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+
+        let sourceDemandInvocations = demandInvocations.value - 2
+        XCTAssertGreaterThanOrEqual(sourceDemandInvocations, 1)
+        XCTAssertLessThanOrEqual(sourceDemandInvocations, 6)
+        XCTAssertLessThanOrEqual(waits.value, 5)
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertNil(result.publicationReceipt)
+        guard case let .pending(reasons) = result.aggregateCoverage else {
+            return XCTFail("Expected bounded busy pending coverage")
+        }
+        XCTAssertEqual(reasons.count, 1)
+        if case let .sourceBusy(_, attempts) = reasons[0] {
+            XCTAssertEqual(sourceDemandInvocations, attempts + 1)
+        } else {
+            XCTFail("Expected source busy reason")
+        }
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionSourceDemandLimitAllowsNAndRejectsNPlusOneBeforeFanout() async throws {
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let root = try fixture.makePlainRoot(files: [
+            "Sources/First.swift": "struct First {}\n",
+            "Sources/Second.swift": "struct Second {}\n",
+            "Sources/Third.swift": "struct Third {}\n"
+        ])
+        addTeardownBlock { await fixture.shutdown() }
+        let store = fixture.makeStore(selectionGraphQueryBudgetPolicy: .init(
+            maximumRawSourceCount: 2,
+            maximumUniqueSourceCount: 2,
+            maximumTargetCount: 100,
+            maximumResolutionCount: 100,
+            maximumReferenceFailureCount: 100
+        ))
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id).sorted {
+            $0.standardizedRelativePath < $1.standardizedRelativePath
+        }
+        let demandCount = ModernCodemapLockedCounter()
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionSourceDemandHook: { _, _ in demandCount.increment() }
+        )
+
+        _ = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: Array(files.prefix(2).map(\.id)),
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(demandCount.value, 2)
+
+        let rejected = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: files.map(\.id),
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(demandCount.value, 2)
+        XCTAssertEqual(rejected.targets, [])
+        XCTAssertNil(rejected.publicationReceipt)
+        XCTAssertEqual(rejected.aggregateCoverage, .budget(.sourceLimit(attempted: 3, limit: 2)))
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionCancellationMidSourceFanoutCancelsOnlyIssuedTickets() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let fixture = try ModernCodemapStoreFixture(name: #function, syntheticGraphArtifacts: true)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/First.swift": "struct First {}\n",
+                "Sources/Second.swift": "struct Second {}\n"
+            ]
+        )
+        let gate = ModernCodemapSuspensionGate()
+        addTeardownBlock {
+            await gate.release()
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let cancelledTickets = ModernCodemapLockedValues<WorkspaceCodemapArtifactDemandTicket>()
+        let store = fixture.makeStore(cancellationCleanupHook: { ticket in
+            cancelledTickets.append(ticket)
+        })
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id).sorted {
+            $0.standardizedRelativePath < $1.standardizedRelativePath
+        }
+        let demandCount = ModernCodemapLockedCounter()
+        let issuedTickets = ModernCodemapLockedValues<WorkspaceCodemapArtifactDemandTicket>()
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionSourceDemandHook: { _, result in
+                demandCount.increment()
+                if case let .pending(ticket) = result {
+                    issuedTickets.append(ticket)
+                } else if case let .ready(ready) = result {
+                    issuedTickets.append(ready.ticket)
+                }
+                if demandCount.value == 1 {
+                    await gate.enterAndWait()
+                }
+            }
+        )
+        let task = Task {
+            try await service.resolveAutomaticCodemapSelection(
+                sourceFileIDs: files.map(\.id),
+                rootScope: .visibleWorkspace
+            )
+        }
+        let fanoutEntered = await gate.waitUntilEntered()
+        XCTAssertTrue(fanoutEntered)
+        let selectionTicket = try XCTUnwrap(issuedTickets.values.first)
+        let joinedResult = await store.requestCodemapArtifact(forFileID: files[0].id)
+        let joinedTicket: WorkspaceCodemapArtifactDemandTicket
+        switch joinedResult {
+        case let .pending(ticket):
+            joinedTicket = ticket
+        case let .ready(ready):
+            joinedTicket = ready.ticket
+        case let .unavailable(reason):
+            return XCTFail("Expected joined demand, got \(reason)")
+        }
+        XCTAssertNotEqual(selectionTicket.retainID, joinedTicket.retainID)
+        let joinedRetainCount = await store.codemapArtifactDemandRetainCountForTesting(selectionTicket)
+        XCTAssertEqual(joinedRetainCount, 2)
+        task.cancel()
+        await gate.release()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertEqual(demandCount.value, 1)
+        XCTAssertEqual(issuedTickets.values.count, 1)
+        let survivingRetainCount = await store.codemapArtifactDemandRetainCountForTesting(joinedTicket)
+        XCTAssertEqual(survivingRetainCount, 1)
+        XCTAssertTrue(cancelledTickets.values.isEmpty)
+        _ = try await readyResult(settledResult(store: store, ticket: joinedTicket))
+
+        let released = await store.cancelCodemapArtifactDemand(joinedTicket)
+        XCTAssertTrue(released)
+        let finalRetainCount = await store.codemapArtifactDemandRetainCountForTesting(joinedTicket)
+        XCTAssertEqual(finalRetainCount, 0)
+        XCTAssertEqual(cancelledTickets.values, [joinedTicket])
+        let releasedStatus = await store.codemapArtifactDemandStatus(joinedTicket)
+        guard case .unavailable(.staleCurrentness) = releasedStatus else {
+            return XCTFail("Expected the released caller token to become stale")
+        }
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionMissingManifestEnvelopesIsPartialWithoutUnrelatedBuilds() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "protocol SourceProtocol { var target: Target { get } }\n",
+                "Sources/Target.swift": "struct Target {}\n",
+                "Sources/Unrelated.swift": "struct Unrelated {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore()
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let source = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+
+        let result = try await WorkspaceSelectionMutationService(store: store)
+            .resolveAutomaticCodemapSelection(
+                sourceFileIDs: [source.id],
+                rootScope: .visibleWorkspace
+            )
+
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertEqual(fixture.buildCount.value, 1)
+        guard case let .partial(reasons) = result.aggregateCoverage else {
+            return XCTFail("Expected partial missing-envelope coverage")
+        }
+        XCTAssertTrue(reasons.contains {
+            if case let .candidateUniverseIncomplete(rootEpoch, count) = $0 {
+                return rootEpoch.rootID == loaded.id && count == 2
+            }
+            return false
+        })
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testAutomaticSelectionCandidateUniverseBudgetStartsNoTargetDemand() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "protocol SourceProtocol { var target: Target { get } }\n",
+                "Sources/Target.swift": "struct Target {}\n",
+                "Sources/Unrelated.swift": "struct Unrelated {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+        let store = fixture.makeStore()
+        let loaded = try await store.loadRoot(path: root.path)
+        let files = await store.files(inRoot: loaded.id)
+        let source = try XCTUnwrap(files.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let service = WorkspaceSelectionMutationService(
+            store: store,
+            automaticSelectionPolicy: .init(
+                maximumReadinessRounds: 6,
+                initialBackoffMilliseconds: 50,
+                maximumBackoffMilliseconds: 400,
+                maximumTotalWait: .seconds(2),
+                maximumCandidateCountPerRoot: 1,
+                maximumCandidateDemandCount: 1024
+            )
+        )
+
+        let result = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(
+            result.aggregateCoverage,
+            .budget(.candidateUniverseLimit(attempted: 2, limit: 1))
+        )
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertNil(result.publicationReceipt)
+        XCTAssertEqual(fixture.buildCount.value, 1)
+        await store.unloadRoot(id: loaded.id)
+    }
+
+    func testColdAutomaticSelectionNeverPlansSameNamedDefinitionFromAnotherRoot() async throws {
+        let firstRepository = try ReviewGitRepositoryFixture(name: #function + "-first")
+        let secondRepository = try ReviewGitRepositoryFixture(name: #function + "-second")
+        let firstRootURL = try firstRepository.makeRepository(
+            named: "first",
+            files: ["Sources/Source.swift": "protocol SourceProtocol { var target: Target { get } }\n"]
+        )
+        let secondRootURL = try secondRepository.makeRepository(
+            named: "second",
+            files: ["Sources/Target.swift": "struct Target {}\n"]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            firstRepository.cleanup()
+            secondRepository.cleanup()
+        }
+        let warmStore = fixture.makeStore()
+        var warmRoots: [WorkspaceRootRecord] = []
+        for rootURL in [firstRootURL, secondRootURL] {
+            let loaded = try await warmStore.loadRoot(path: rootURL.path)
+            warmRoots.append(loaded)
+            for file in await warmStore.files(inRoot: loaded.id) {
+                let ticket = try await pendingTicket(
+                    warmStore.requestCodemapArtifact(forFileID: file.id)
+                )
+                _ = try await readyResult(settledResult(store: warmStore, ticket: ticket))
+            }
+        }
+        for root in warmRoots {
+            await warmStore.unloadRoot(id: root.id)
+        }
+
+        let coldStore = fixture.makeStore()
+        let firstColdRoot = try await coldStore.loadRoot(path: firstRootURL.path)
+        let secondColdRoot = try await coldStore.loadRoot(path: secondRootURL.path)
+        let firstFiles = await coldStore.files(inRoot: firstColdRoot.id)
+        let source = try XCTUnwrap(firstFiles.first)
+        let result = try await WorkspaceSelectionMutationService(store: coldStore)
+            .resolveAutomaticCodemapSelection(
+                sourceFileIDs: [source.id],
+                rootScope: .visibleWorkspace
+            )
+
+        XCTAssertTrue(result.targets.isEmpty)
+        XCTAssertFalse(result.roots.contains { $0.rootEpoch.rootID == secondColdRoot.id })
+        await coldStore.unloadRoot(id: firstColdRoot.id)
+        await coldStore.unloadRoot(id: secondColdRoot.id)
+    }
+
+    func testColdAutomaticSelectionBuildsOnlyMatchedMissingCASTargetAtBackgroundPriority() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "protocol SourceProtocol { var target: Target { get } }\n",
+                "Sources/Target.swift": "struct Target {}\n",
+                "Sources/Unrelated.swift": "struct Unrelated {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+
+        let warmStore = fixture.makeStore()
+        let warmRoot = try await warmStore.loadRoot(path: root.path)
+        let warmFiles = await warmStore.files(inRoot: warmRoot.id)
+        var targetKey: CodeMapArtifactKey?
+        for file in warmFiles {
+            let ticket = try await pendingTicket(
+                warmStore.requestCodemapArtifact(forFileID: file.id)
+            )
+            let ready = try await readyResult(settledResult(store: warmStore, ticket: ticket))
+            if file.standardizedRelativePath == "Sources/Target.swift" {
+                targetKey = ready.snapshot.artifactKey
+            }
+        }
+        let warmBuildCount = fixture.buildCount.value
+        await warmStore.unloadRoot(id: warmRoot.id)
+        try FileManager.default.removeItem(at: fixture.artifactURL(for: XCTUnwrap(targetKey)))
+
+        let coldStore = try fixture.makeFreshStore()
+        let coldRoot = try await coldStore.loadRoot(path: root.path)
+        let coldFiles = await coldStore.files(inRoot: coldRoot.id)
+        let source = try XCTUnwrap(coldFiles.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let result = try await WorkspaceSelectionMutationService(store: coldStore)
+            .resolveAutomaticCodemapSelection(
+                sourceFileIDs: [source.id],
+                rootScope: .visibleWorkspace
+            )
+
+        XCTAssertEqual(
+            result.targets.map(\.logicalPath.standardizedRelativePath),
+            ["Sources/Target.swift"]
+        )
+        XCTAssertEqual(fixture.buildCount.value, warmBuildCount + 1)
+        XCTAssertEqual(fixture.buildPriorities.values.last, .background)
+        XCTAssertFalse(result.targets.contains {
+            $0.logicalPath.standardizedRelativePath == "Sources/Unrelated.swift"
+        })
+        await coldStore.unloadRoot(id: coldRoot.id)
+    }
+
+    func testColdAutomaticSelectionUsesManifestEnvelopeAndCASWithoutUnrelatedBuild() async throws {
+        let repositoryFixture = try ReviewGitRepositoryFixture(name: #function)
+        let root = try repositoryFixture.makeRepository(
+            named: "repository",
+            files: [
+                "Sources/Source.swift": "protocol SourceProtocol { var target: Target { get } }\n",
+                "Sources/Target.swift": "struct Target {}\n",
+                "Sources/Unrelated.swift": "struct Unrelated {}\n"
+            ]
+        )
+        let fixture = try ModernCodemapStoreFixture(
+            name: #function,
+            syntheticGraphArtifacts: true
+        )
+        addTeardownBlock {
+            await fixture.shutdown()
+            repositoryFixture.cleanup()
+        }
+
+        let warmStore = fixture.makeStore()
+        let warmRoot = try await warmStore.loadRoot(path: root.path)
+        let warmFiles = await warmStore.files(inRoot: warmRoot.id)
+        for file in warmFiles {
+            let ticket = try await pendingTicket(
+                warmStore.requestCodemapArtifact(forFileID: file.id)
+            )
+            _ = try await readyResult(settledResult(store: warmStore, ticket: ticket))
+        }
+        let warmBuildCount = fixture.buildCount.value
+        await warmStore.unloadRoot(id: warmRoot.id)
+
+        let coldStore = fixture.makeStore()
+        let coldRoot = try await coldStore.loadRoot(path: root.path)
+        let coldFiles = await coldStore.files(inRoot: coldRoot.id)
+        let source = try XCTUnwrap(coldFiles.first {
+            $0.standardizedRelativePath == "Sources/Source.swift"
+        })
+        let service = WorkspaceSelectionMutationService(store: coldStore)
+        let result = try await service.resolveAutomaticCodemapSelection(
+            sourceFileIDs: [source.id],
+            rootScope: .visibleWorkspace
+        )
+
+        XCTAssertEqual(
+            result.targets.map(\.logicalPath.standardizedRelativePath),
+            ["Sources/Target.swift"]
+        )
+        XCTAssertEqual(fixture.buildCount.value, warmBuildCount)
+        XCTAssertFalse(result.targets.contains {
+            $0.logicalPath.standardizedRelativePath == "Sources/Unrelated.swift"
+        })
+        let receipt = try XCTUnwrap(result.publicationReceipt)
+        let publication = await coldStore.revalidateAutomaticCodemapSelectionForPublication(
+            receipt,
+            rootScope: .visibleWorkspace
+        )
+        guard case let .current(targets) = publication else {
+            return XCTFail("Expected current publication receipt")
+        }
+        XCTAssertEqual(targets, result.targets)
+
+        let target = try XCTUnwrap(result.targets.first)
+        let targetReady = try await readyResult(
+            coldStore.requestCodemapArtifact(forFileID: target.fileID)
+        )
+        let cancelled = await coldStore.cancelCodemapArtifactDemand(targetReady.ticket)
+        XCTAssertTrue(cancelled)
+        let stalePublication = await coldStore.revalidateAutomaticCodemapSelectionForPublication(
+            receipt,
+            rootScope: .visibleWorkspace
+        )
+        XCTAssertEqual(stalePublication, .stale(.publicationReceipt))
+        await coldStore.unloadRoot(id: coldRoot.id)
+    }
+
     private func pendingTicket(
         _ result: WorkspaceCodemapArtifactDemandResult
     ) throws -> WorkspaceCodemapArtifactDemandTicket {
@@ -1961,11 +3613,18 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
     let engineFactoryCount = ModernCodemapLockedCounter()
     let manifestReadCount = ModernCodemapLockedCounter()
     let buildCount = ModernCodemapLockedCounter()
+    let buildPriorities = ModernCodemapLockedValues<CodeMapArtifactBuildPriority>()
 
     private let sandbox: URL
+    private let artifactRoot: URL
+    private let freshRuntimeFactory: @Sendable () throws -> CodeMapArtifactRuntime
     private let runtimeProvider: CodeMapArtifactRuntimeProvider
 
-    init(name: String, resolutionGate: ModernCodemapResolutionGate? = nil) throws {
+    init(
+        name: String,
+        resolutionGate: ModernCodemapResolutionGate? = nil,
+        syntheticGraphArtifacts: Bool = false
+    ) throws {
         let sandbox = try Self.makeSandbox(name: name)
         let artifactRoot = try Self.makeSecureDirectory(in: sandbox, named: "artifacts")
         let registry = registry
@@ -1973,8 +3632,9 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
         let engineFactoryCount = engineFactoryCount
         let manifestReadCount = manifestReadCount
         let buildCount = buildCount
+        let buildPriorities = buildPriorities
         let defaultBuilder = CodeMapArtifactBuilderClient()
-        runtimeProvider = CodeMapArtifactRuntimeProvider {
+        let freshRuntimeFactory: @Sendable () throws -> CodeMapArtifactRuntime = {
             runtimeFactoryCount.increment()
             return try CodeMapArtifactRuntime(
                 rootURL: artifactRoot,
@@ -1985,6 +3645,16 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
                 ),
                 builder: CodeMapArtifactBuilderClient(execute: { input, ownerID, priority in
                     buildCount.increment()
+                    buildPriorities.append(priority)
+                    if syntheticGraphArtifacts,
+                       case let .decoded(source) = input.source.decodeResult
+                    {
+                        return CodeMapArtifactBuilderExecution(
+                            outcome: .ready(Self.syntheticGraphArtifact(source.text)),
+                            permitWaitNanoseconds: 0,
+                            buildNanoseconds: 0
+                        )
+                    }
                     return try await defaultBuilder.execute(input, ownerID, priority)
                 }),
                 bindingIntegrationRegistry: registry,
@@ -2009,7 +3679,10 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
                 }
             )
         }
+        runtimeProvider = CodeMapArtifactRuntimeProvider(factory: freshRuntimeFactory)
         self.sandbox = sandbox
+        self.artifactRoot = artifactRoot
+        self.freshRuntimeFactory = freshRuntimeFactory
     }
 
     deinit {
@@ -2019,11 +3692,19 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
     func makeStore(
         selectionGraphFactory: WorkspaceCodemapSelectionGraphFactory = .production,
         selectionGraphQueryBudgetPolicy: WorkspaceCodemapStoreSelectionGraphQueryBudgetPolicy = .initial,
+        automaticSelectionAccountingMaximum: Int = .max,
         cancellationCleanupHook: @escaping @Sendable (
             WorkspaceCodemapArtifactDemandTicket
         ) async -> Void = { _ in },
         readyPublicationHook: @escaping @Sendable (
             WorkspaceCodemapArtifactDemandTicket
+        ) async -> Void = { _ in },
+        demandResultHook: @escaping @Sendable (
+            WorkspaceCodemapArtifactDemandTicket,
+            WorkspaceCodemapBindingDemandResult
+        ) async -> WorkspaceCodemapBindingDemandResult = { _, result in result },
+        automaticSelectionQueryHook: @escaping @Sendable (
+            WorkspaceCodemapRootEpoch
         ) async -> Void = { _ in }
     ) -> WorkspaceFileContextStore {
         let providerAccessCount = providerAccessCount
@@ -2035,9 +3716,32 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
             },
             selectionGraphFactory: selectionGraphFactory,
             selectionGraphQueryBudgetPolicy: selectionGraphQueryBudgetPolicy,
+            automaticSelectionAccountingMaximum: automaticSelectionAccountingMaximum,
             modernCodemapCancellationCleanupHook: cancellationCleanupHook,
-            modernCodemapReadyPublicationHook: readyPublicationHook
+            modernCodemapReadyPublicationHook: readyPublicationHook,
+            modernCodemapDemandResultHook: demandResultHook,
+            modernCodemapAutomaticSelectionQueryHook: automaticSelectionQueryHook
         )
+    }
+
+    func makeFreshStore() throws -> WorkspaceFileContextStore {
+        let runtime = try freshRuntimeFactory()
+        let providerAccessCount = providerAccessCount
+        return WorkspaceFileContextStore(
+            codemapRuntimeProvider: {
+                providerAccessCount.increment()
+                return runtime
+            }
+        )
+    }
+
+    func artifactURL(for key: CodeMapArtifactKey) -> URL {
+        artifactRoot
+            .appendingPathComponent("CodeMapArtifacts", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+            .appendingPathComponent("artifacts", isDirectory: true)
+            .appendingPathComponent(key.shard, isDirectory: true)
+            .appendingPathComponent(key.storageDigestHex)
     }
 
     func makePlainRoot(files: [String: String]) throws -> URL {
@@ -2104,14 +3808,59 @@ private final class ModernCodemapStoreFixture: @unchecked Sendable {
         )
         try contents.write(to: url, atomically: true, encoding: .utf8)
     }
+
+    private static func syntheticGraphArtifact(_ source: String) -> CodeMapSyntaxArtifact {
+        let definitions: [String]
+        let references: [String]
+        if source.contains("let target: Target") {
+            definitions = ["Source"]
+            references = ["Target"]
+        } else if source.contains("protocol FirstSource") {
+            definitions = ["FirstSource"]
+            references = ["FirstTarget"]
+        } else if source.contains("protocol SecondSource") {
+            definitions = ["SecondSource"]
+            references = ["SecondTarget"]
+        } else if source.contains("protocol SourceProtocol") {
+            definitions = ["SourceProtocol"]
+            if source.contains("ForeignDefinition") {
+                references = ["ForeignDefinition"]
+            } else if source.contains("FirstTarget"), source.contains("SecondTarget") {
+                references = ["FirstTarget", "SecondTarget"]
+            } else {
+                references = ["Target"]
+            }
+        } else if source.contains("ForeignDefinition") {
+            definitions = ["ForeignDefinition"]
+            references = []
+        } else if source.contains("FirstTarget") {
+            definitions = ["FirstTarget"]
+            references = []
+        } else if source.contains("SecondTarget") {
+            definitions = ["SecondTarget"]
+            references = []
+        } else if source.contains("Target") {
+            definitions = ["Target"]
+            references = []
+        } else {
+            definitions = []
+            references = []
+        }
+        return CodeMapSyntaxArtifact(
+            imports: [],
+            classes: definitions.map { ClassInfo(name: $0, methods: [], properties: []) },
+            functions: [],
+            enums: [],
+            globalVars: [],
+            macros: [],
+            referencedTypes: references
+        )
+    }
 }
 
 private final class ModernCodemapSelectionGraphProbe: @unchecked Sendable {
     private let lock = NSLock()
-    private let admission = CodeMapSelectionGraphAdmission(policy: .init(
-        maximumActiveReservationCount: 8,
-        maximumReservedBindingCount: 100_000
-    ))
+    private let admission: CodeMapSelectionGraphAdmission
     private let buildGate: ModernCodemapSelectionGraphBuildGate?
     private let runtimePolicy: WorkspaceCodemapSelectionGraphRuntimePolicy
     private var graphsByRootEpoch: [WorkspaceCodemapRootEpoch: WorkspaceCodemapSelectionGraph] = [:]
@@ -2119,9 +3868,14 @@ private final class ModernCodemapSelectionGraphProbe: @unchecked Sendable {
 
     init(
         buildGate: ModernCodemapSelectionGraphBuildGate? = nil,
+        admissionPolicy: CodeMapSelectionGraphAdmissionPolicy = .init(
+            maximumActiveReservationCount: 8,
+            maximumReservedBindingCount: 100_000
+        ),
         runtimePolicy: WorkspaceCodemapSelectionGraphRuntimePolicy = .initial
     ) {
         self.buildGate = buildGate
+        admission = CodeMapSelectionGraphAdmission(policy: admissionPolicy)
         self.runtimePolicy = runtimePolicy
     }
 
@@ -2252,6 +4006,19 @@ private final class ModernCodemapLockedCounter: @unchecked Sendable {
     }
 }
 
+private final class ModernCodemapLockedValues<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Value] = []
+
+    var values: [Value] {
+        lock.withLock { storage }
+    }
+
+    func append(_ value: Value) {
+        lock.withLock { storage.append(value) }
+    }
+}
+
 private actor ModernCodemapSuspensionGate {
     private var entered = false
     private var released = false
@@ -2303,6 +4070,34 @@ private actor ModernCodemapArmableSuspensionGate {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return entered
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor ModernCodemapRootSuspensionGate {
+    private var enteredRootEpoch: WorkspaceCodemapRootEpoch?
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func enterAndWait(_ rootEpoch: WorkspaceCodemapRootEpoch) async {
+        guard enteredRootEpoch == nil else { return }
+        enteredRootEpoch = rootEpoch
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilEntered(timeout: Duration = .seconds(10)) async -> WorkspaceCodemapRootEpoch? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while enteredRootEpoch == nil, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return enteredRootEpoch
     }
 
     func release() {

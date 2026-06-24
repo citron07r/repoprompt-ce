@@ -26,7 +26,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let service = PromptContextAccountingService()
         let selection = StoredSelection(
             selectedPaths: [fileC.path, fileA.path, fileB.path],
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -136,7 +136,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let service = PromptContextAccountingService()
         let selection = StoredSelection(
             selectedPaths: [fileA.path, fileA.path, fileB.path],
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -162,7 +162,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let service = PromptContextAccountingService()
         let selection = StoredSelection(
             selectedPaths: [fileURL.path],
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -212,7 +212,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let slice = LineRange(start: 2, end: 2)
         let selectionWithoutCanonicalCodemap = StoredSelection(
             selectedPaths: [selectedURL.path],
-            autoCodemapPaths: [],
+
             slices: [selectedURL.path: [slice]],
             codemapAutoEnabled: false
         )
@@ -232,9 +232,9 @@ final class PromptContextAccountingServiceTests: XCTestCase {
 
         let canonicalSelection = StoredSelection(
             selectedPaths: selectionWithoutCanonicalCodemap.selectedPaths,
-            autoCodemapPaths: [targetURL.path],
+
             slices: selectionWithoutCanonicalCodemap.slices,
-            codemapAutoEnabled: false
+            codemapAutoEnabled: true
         )
         let canonicalResolution = await service.resolveEntries(
             selection: canonicalSelection,
@@ -263,7 +263,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let unresolvedRelativePath = "DefinitelyMissing.swift"
         let selection = StoredSelection(
             selectedPaths: [missingPath, unresolvedRelativePath],
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -295,7 +295,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let service = PromptContextAccountingService()
         let selection = StoredSelection(
             selectedPaths: expansion.files.map(\.standardizedFullPath),
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -381,10 +381,10 @@ final class PromptContextAccountingServiceTests: XCTestCase {
         let result = await PromptContextAccountingService().calculatePromptStats(
             request: PromptContextAccountingRequest(
                 selection: StoredSelection(
-                    autoCodemapPaths: [fileURL.path],
-                    codemapAutoEnabled: true
+                    selectedPaths: [fileURL.path],
+                    codemapAutoEnabled: false
                 ),
-                codeMapUsage: .auto,
+                codeMapUsage: .selected,
                 filePathDisplay: .relative
             ),
             store: store
@@ -424,7 +424,7 @@ final class PromptContextAccountingServiceTests: XCTestCase {
             let service = PromptContextAccountingService()
             let selection = StoredSelection(
                 selectedPaths: [],
-                autoCodemapPaths: [],
+
                 slices: [:],
                 codemapAutoEnabled: false
             )

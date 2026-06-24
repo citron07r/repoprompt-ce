@@ -155,6 +155,36 @@ struct WorkspaceCodemapBindingCatalogClient: @unchecked Sendable {
     static let unavailable = WorkspaceCodemapBindingCatalogClient { _, _ in nil }
 }
 
+struct WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate: Hashable {
+    let identity: WorkspaceCodemapArtifactBindingIdentity
+    let language: LanguageType
+    let catalogGeneration: UInt64
+    let pathGeneration: UInt64
+    let ingressGeneration: UInt64
+}
+
+struct WorkspaceCodemapBindingAutomaticSelectionPlanRequest: Hashable {
+    let rootEpoch: WorkspaceCodemapRootEpoch
+    let sourceTickets: [WorkspaceCodemapArtifactDemandTicket]
+    let candidates: [WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate]
+    let maximumMatchedCandidateCount: Int
+}
+
+struct WorkspaceCodemapBindingAutomaticSelectionPlan: Hashable {
+    let necessaryCandidates: [WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate]
+    let indexedCandidateCount: Int
+    let missingContributionCount: Int
+    let staleContributionCount: Int
+}
+
+enum WorkspaceCodemapBindingAutomaticSelectionPlanDisposition: Hashable {
+    case ready(WorkspaceCodemapBindingAutomaticSelectionPlan)
+    case pending(retryAfterMilliseconds: Int?)
+    case stale
+    case unavailable
+    case budget(attempted: Int, limit: Int)
+}
+
 struct WorkspaceCodemapValidatedSourceReaderClient: @unchecked Sendable {
     let read: @Sendable (
         WorkspaceCodemapArtifactBindingIdentity,

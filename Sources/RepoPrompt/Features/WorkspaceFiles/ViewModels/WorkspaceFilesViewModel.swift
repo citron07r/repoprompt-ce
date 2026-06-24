@@ -455,6 +455,11 @@ class WorkspaceFilesViewModel: ObservableObject {
 
     private typealias RootKey = String
 
+    private struct AutomaticCodemapTargetIdentity: Hashable {
+        let rootEpoch: WorkspaceCodemapRootEpoch
+        let fileID: UUID
+    }
+
     private struct RootLoadToken: Equatable {
         let rootKey: RootKey
         let lifecycleGeneration: UInt64
@@ -690,16 +695,24 @@ class WorkspaceFilesViewModel: ObservableObject {
         didSet {
             guard codemapAutoEnabled != oldValue else { return }
             selectionStateRevision &+= 1
+            autoCodemapSyncTask?.cancel()
+            autoCodemapSyncTask = nil
+            autoCodemapSelectionGeneration &+= 1
+            autoCodemapReadinessRetryAvailable = false
+            autoCodemapReadinessRetryPending = false
+            // Crossing either direction invalidates the transient inferred projection.
+            // Explicit manual files are added only after auto mode is disabled.
+            resetAutoCodemapFiles([])
             if codemapAutoEnabled {
                 scheduleAutoCodemapSync()
-            } else {
-                autoCodemapSyncTask?.cancel()
-                autoCodemapSyncTask = nil
             }
         }
     }
 
     private var autoCodemapSyncTask: Task<Void, Never>?
+    private var autoCodemapSelectionGeneration: UInt64 = 0
+    private var autoCodemapReadinessRetryAvailable = false
+    private var autoCodemapReadinessRetryPending = false
 
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: FileManagerError?
@@ -1185,13 +1198,19 @@ class WorkspaceFilesViewModel: ObservableObject {
     private var workspaceStoreDeltaBridgeTask: Task<Void, Never>?
     private var workspaceStoreCodemapBridgeTask: Task<Void, Never>?
     private let alwaysReadableHomeDirectoryURL: URL
+    private let automaticCodemapSelectionRequestPolicy: WorkspaceCodemapAutomaticSelectionRequestPolicy
+    private let automaticCodemapSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter
 
     init(
         alwaysReadableHomeDirectoryURL: URL? = nil,
-        workspaceFileContextStore: WorkspaceFileContextStore
+        workspaceFileContextStore: WorkspaceFileContextStore,
+        automaticCodemapSelectionRequestPolicy: WorkspaceCodemapAutomaticSelectionRequestPolicy = .default,
+        automaticCodemapSelectionWaiter: WorkspaceCodemapAutomaticSelectionWaiter = .production
     ) {
         self.alwaysReadableHomeDirectoryURL = (alwaysReadableHomeDirectoryURL ?? FileManager.default.homeDirectoryForCurrentUser).standardizedFileURL
         self.workspaceFileContextStore = workspaceFileContextStore
+        self.automaticCodemapSelectionRequestPolicy = automaticCodemapSelectionRequestPolicy
+        self.automaticCodemapSelectionWaiter = automaticCodemapSelectionWaiter
         // If you store sortMethod in user defaults, do that here
         if let loaded = SortMethod(rawValue: storedSortMethod) {
             currentSortMethod = loaded
@@ -2373,7 +2392,7 @@ class WorkspaceFilesViewModel: ObservableObject {
     @MainActor
     private func handleWorkspaceStoreCodemapUpdateEvent(_ event: WorkspaceCodemapUpdateEvent) {
         var updated = false
-        var shouldScheduleAutoSync = false
+        var shouldScheduleAutoSync = event.automaticSelectionReadinessChanged
 
         for snapshot in event.snapshots {
             guard let fileVM = findFileByFullPath(snapshot.fullPath) else { continue }
@@ -2406,10 +2425,16 @@ class WorkspaceFilesViewModel: ObservableObject {
             }
         }
 
-        guard updated else { return }
-        codeMapUpdatePublisher.send(())
+        guard updated || shouldScheduleAutoSync else { return }
+        if updated {
+            codeMapUpdatePublisher.send(())
+        }
         if shouldScheduleAutoSync {
-            scheduleAutoCodemapSync()
+            if autoCodemapReadinessRetryPending {
+                scheduleAutoCodemapSync(readinessTriggered: true)
+            } else if autoCodemapReadinessRetryAvailable {
+                scheduleAutoCodemapSync()
+            }
         }
     }
 
@@ -11475,6 +11500,28 @@ extension WorkspaceFilesViewModel {
         codeMapUpdatePublisher.send(())
     }
 
+    #if DEBUG
+        @MainActor
+        func setAutoCodemapFilesForTesting(_ files: [FileViewModel]) {
+            resetAutoCodemapFiles(files)
+        }
+
+        @MainActor
+        func handleAutomaticCodemapReadinessForTesting(rootID: UUID, rootPath: String) {
+            handleWorkspaceStoreCodemapUpdateEvent(WorkspaceCodemapUpdateEvent(
+                rootID: rootID,
+                rootPath: rootPath,
+                snapshots: [],
+                automaticSelectionReadinessChanged: true
+            ))
+        }
+
+        @MainActor
+        func waitForAutoCodemapSyncForTesting() async {
+            await autoCodemapSyncTask?.value
+        }
+    #endif
+
     @MainActor
     func clearAutoCodemapFiles(disableAuto: Bool = true) {
         if disableAuto {
@@ -11486,35 +11533,16 @@ extension WorkspaceFilesViewModel {
 
     @MainActor
     func flushAutoCodemapSyncNowIfNeeded() async {
-        // Cancel any pending debounced task
         autoCodemapSyncTask?.cancel()
         autoCodemapSyncTask = nil
-        // Only sync when auto mode is enabled
-        if codemapAutoEnabled {
-            // Recompute the auto-codemap set immediately from the store codemap mirror.
-            let aggregate = await workspaceFileContextStore.codemapFileAPIAggregate(
-                rootScope: .visibleWorkspace
-            )
-            syncAutoCodemaps(aggregate: aggregate)
-        }
-    }
+        guard codemapAutoEnabled else { return }
 
-    @MainActor
-    private func addAutoCodemapFile(_ file: FileViewModel) {
-        if autoCodemapFileIDs.insert(file.id).inserted {
-            autoCodemapFiles.append(file)
-            // Notify that codemap files changed so token counts can update
-            codeMapUpdatePublisher.send(())
-        }
-    }
-
-    @MainActor
-    private func removeAutoCodemapFile(_ file: FileViewModel) {
-        if autoCodemapFileIDs.remove(file.id) != nil {
-            autoCodemapFiles.removeAll { $0.id == file.id }
-            // Notify that codemap files changed so token counts can update
-            codeMapUpdatePublisher.send(())
-        }
+        autoCodemapSelectionGeneration &+= 1
+        autoCodemapReadinessRetryAvailable = true
+        autoCodemapReadinessRetryPending = false
+        let generation = autoCodemapSelectionGeneration
+        let sourceIDs = visibleSelectedFileIDs()
+        await resolveAutomaticCodemaps(generation: generation, sourceIDs: sourceIDs)
     }
 
     @MainActor
@@ -11524,14 +11552,11 @@ extension WorkspaceFilesViewModel {
 
     @MainActor
     func enterManualCodemapMode() {
-        if codemapAutoEnabled {
-            // Preserve the current auto-codemap set; just stop auto-syncing.
-            codemapAutoEnabled = false
-            autoCodemapSyncTask?.cancel()
-            autoCodemapSyncTask = nil
-        } else {
-            autoCodemapSyncTask?.cancel()
-            autoCodemapSyncTask = nil
+        autoCodemapSyncTask?.cancel()
+        autoCodemapSyncTask = nil
+        codemapAutoEnabled = false
+        if !autoCodemapFiles.isEmpty {
+            resetAutoCodemapFiles([])
         }
     }
 
@@ -11564,70 +11589,125 @@ extension WorkspaceFilesViewModel {
     }
 
     @MainActor
-    private func scheduleAutoCodemapSync() {
+    private func scheduleAutoCodemapSync(readinessTriggered: Bool = false) {
         guard codemapAutoEnabled else { return }
+        if readinessTriggered {
+            guard autoCodemapReadinessRetryAvailable,
+                  autoCodemapReadinessRetryPending
+            else { return }
+            autoCodemapReadinessRetryAvailable = false
+            autoCodemapReadinessRetryPending = false
+        } else {
+            autoCodemapReadinessRetryAvailable = true
+            autoCodemapReadinessRetryPending = false
+        }
         autoCodemapSyncTask?.cancel()
+        autoCodemapSelectionGeneration &+= 1
+        let generation = autoCodemapSelectionGeneration
+        let sourceIDs = visibleSelectedFileIDs()
         autoCodemapSyncTask = Task(priority: .utility) { [weak self] in
-            // Debounce to coalesce rapid selection churn without blocking the main actor
-            try? await Task.sleep(nanoseconds: 400_000_000) // 400ms debounce
+            try? await Task.sleep(nanoseconds: 400_000_000)
             guard let self else { return }
-            defer { self.autoCodemapSyncTask = nil }
+            defer {
+                if self.autoCodemapSelectionGeneration == generation {
+                    self.autoCodemapSyncTask = nil
+                }
+            }
             guard !Task.isCancelled else { return }
-            guard codemapAutoEnabled else { return }
-            let aggregate = await workspaceFileContextStore.codemapFileAPIAggregate(
-                rootScope: .visibleWorkspace
-            )
-            guard !Task.isCancelled else { return }
-            syncAutoCodemaps(aggregate: aggregate)
+            await resolveAutomaticCodemaps(generation: generation, sourceIDs: sourceIDs)
         }
     }
 
     @MainActor
-    private func syncAutoCodemaps(aggregate: WorkspaceCodemapFileAPIAggregate) {
-        guard codemapAutoEnabled else {
-            resetAutoCodemapFiles([])
-            return
-        }
-
-        guard true else {
-            resetAutoCodemapFiles([])
-            return
-        }
-
+    private func visibleSelectedFileIDs() -> [UUID] {
         let visibleRootIDs = Set(visibleRootFolders.map(\.id))
-        let selectedFilesSnapshot = selectedFiles.filter { visibleRootIDs.contains($0.rootIdentifier) }
-        guard !selectedFilesSnapshot.isEmpty else {
+        return selectedFiles
+            .filter { visibleRootIDs.contains($0.rootIdentifier) }
+            .map(\.id)
+    }
+
+    @MainActor
+    private func automaticCodemapSelectionIsCurrent(
+        generation: UInt64,
+        sourceIDs: [UUID]
+    ) -> Bool {
+        !Task.isCancelled &&
+            codemapAutoEnabled &&
+            autoCodemapSelectionGeneration == generation &&
+            visibleSelectedFileIDs() == sourceIDs
+    }
+
+    @MainActor
+    private func resolveAutomaticCodemaps(
+        generation: UInt64,
+        sourceIDs: [UUID]
+    ) async {
+        guard automaticCodemapSelectionIsCurrent(
+            generation: generation,
+            sourceIDs: sourceIDs
+        ) else { return }
+        guard !sourceIDs.isEmpty else {
             resetAutoCodemapFiles([])
             return
         }
 
-        let selectedPaths = Set(selectedFilesSnapshot.map(\.standardizedFullPath))
-        guard !aggregate.orderedFileAPIs.isEmpty else {
-            resetAutoCodemapFiles([])
+        let result: WorkspaceCodemapAutomaticSelectionResult
+        do {
+            result = try await WorkspaceSelectionMutationService(
+                store: workspaceFileContextStore,
+                automaticSelectionPolicy: automaticCodemapSelectionRequestPolicy,
+                automaticSelectionWaiter: automaticCodemapSelectionWaiter
+            ).resolveAutomaticCodemapSelection(
+                sourceFileIDs: sourceIDs,
+                rootScope: .visibleWorkspace
+            )
+        } catch {
             return
         }
-
-        let referencedPaths = CodeMapExtractor.resolveReferencedFilePaths(
-            from: selectedFilesSnapshot,
-            among: aggregate.orderedFileAPIs
-        )
-
-        if referencedPaths.isEmpty {
-            resetAutoCodemapFiles([])
+        guard automaticCodemapSelectionIsCurrent(
+            generation: generation,
+            sourceIDs: sourceIDs
+        ) else { return }
+        switch result.aggregateCoverage {
+        case .complete, .partial:
+            break
+        case .pending, .busy:
+            if autoCodemapReadinessRetryAvailable {
+                autoCodemapReadinessRetryPending = true
+            }
+            return
+        case .unavailable, .stale, .budget:
             return
         }
+        guard let receipt = result.publicationReceipt else { return }
+        let publication = await workspaceFileContextStore
+            .revalidateAutomaticCodemapSelectionForPublication(
+                receipt,
+                rootScope: .visibleWorkspace
+            )
 
-        var unique = Set<UUID>()
-        let resolved = referencedPaths.compactMap { standardizedPath -> FileViewModel? in
-            guard !selectedPaths.contains(standardizedPath),
-                  let vm = fileHierarchyIndex.filesByFullPath[standardizedPath],
-                  visibleRootIDs.contains(vm.rootIdentifier),
-                  unique.insert(vm.id).inserted
+        guard automaticCodemapSelectionIsCurrent(
+            generation: generation,
+            sourceIDs: sourceIDs
+        ), case let .current(targets) = publication
+        else { return }
+        autoCodemapReadinessRetryAvailable = true
+        autoCodemapReadinessRetryPending = false
+        let sourceIDSet = Set(sourceIDs)
+        var seenTargets = Set<AutomaticCodemapTargetIdentity>()
+        let resolvedTargets = targets.compactMap { target -> FileViewModel? in
+            let identity = AutomaticCodemapTargetIdentity(
+                rootEpoch: target.rootEpoch,
+                fileID: target.fileID
+            )
+            guard !sourceIDSet.contains(target.fileID),
+                  seenTargets.insert(identity).inserted,
+                  let file = fileHierarchyIndex.filesByID[target.fileID],
+                  file.rootIdentifier == target.rootEpoch.rootID
             else { return nil }
-            return vm
+            return file
         }
-
-        resetAutoCodemapFiles(resolved)
+        resetAutoCodemapFiles(resolvedTargets)
     }
 
     /// UI/test compatibility snapshot of the current checkbox/slice/codemap mirror.
@@ -11636,7 +11716,6 @@ extension WorkspaceFilesViewModel {
     @MainActor
     func snapshotSelection() -> StoredSelection {
         let selectedPaths = selectedFiles.map(\.standardizedFullPath)
-        let autoPaths = autoCodemapFiles.map(\.standardizedFullPath)
         var slicesByPath: [String: [LineRange]] = [:]
         for file in selectedFiles {
             if let ranges = selectionSlicesByFileID[file.id], !ranges.isEmpty {
@@ -11645,7 +11724,6 @@ extension WorkspaceFilesViewModel {
         }
         return StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: autoPaths,
             slices: slicesByPath,
             codemapAutoEnabled: codemapAutoEnabled
         )
@@ -11745,12 +11823,7 @@ extension WorkspaceFilesViewModel {
             )
         #endif
 
-        let autoCodemapPaths = standardizedStoredSelectionPaths(stored.autoCodemapPaths)
-        let restoredAutoCodemapLookup = await findFiles(atPaths: autoCodemapPaths, profile: .mcpSelection)
-        let restoredAutoCodemapFiles = autoCodemapPaths.compactMap { path in
-            restoredAutoCodemapLookup[path] ?? fileHierarchyIndex.filesByFullPath[path]
-        }
-        resetAutoCodemapFiles(restoredAutoCodemapFiles)
+        resetAutoCodemapFiles([])
 
         let storedSlicePaths = Array(standardizedStoredSelectionSlices(stored.slices).keys)
         if !storedSlicePaths.isEmpty {
@@ -11767,9 +11840,7 @@ extension WorkspaceFilesViewModel {
                 "selection.applyStoredSelection",
                 fields: [
                     "selectedPaths": "\(stored.selectedPaths.count)",
-                    "autoCodemapPaths": "\(stored.autoCodemapPaths.count)",
                     "sliceFiles": "\(stored.slices.count)",
-                    "restoredAutoCodemapFiles": "\(restoredAutoCodemapFiles.count)",
                     "codemapAutoEnabled": "\(stored.codemapAutoEnabled)",
                     "selectionSnapshotDuration": applySelectionSnapshotDuration,
                     "duration": applyStoredSelectionStartMS.map { WorkspaceRestorePerfLog.formatElapsedMS(since: $0) } ?? "notMeasured"
@@ -11804,31 +11875,15 @@ extension WorkspaceFilesViewModel {
     }
 
     @MainActor
-    func setFileAsCodemap(_ file: FileViewModel) {
-        guard true else { return }
-        // Only allow files with codemap support to be added as codemaps
-        guard file.supportsCodeMap else { return }
-
-        performSelectionBatch {
-            if file.isChecked {
-                file.setIsChecked(false)
-            }
-        }
-
-        selectionSlicesByFileID.removeValue(forKey: file.id)
-        let wasAlreadyCodemap = isAutoCodemapFile(file)
-        if !wasAlreadyCodemap {
-            addAutoCodemapFile(file)
-        }
-        codemapAutoEnabled = false
-        requestSelectionSliceSnapshotRebuild(reason: "selection.slicesSnapshot")
+    func setFileAsCodemap(_: FileViewModel) {
+        // Manual codemap-only state is intentionally unsupported and never persisted.
+        enterManualCodemapMode()
     }
 
     @MainActor
     func removeCodemapFile(_ file: FileViewModel) {
         guard isAutoCodemapFile(file) else { return }
         enterManualCodemapMode()
-        removeAutoCodemapFile(file)
     }
 
     @MainActor

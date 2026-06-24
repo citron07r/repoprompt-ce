@@ -274,6 +274,13 @@ actor PromptContextAccountingService {
         var invalidPaths: [String] = []
         var seenIDs = Set<ResolvedPromptFileEntryID>()
         var selectedFileIDs = Set<UUID>()
+        var autoCodemapSourceFiles: [WorkspaceFileRecord] = []
+        var autoCodemapSourceFileIDs = Set<UUID>()
+
+        func recordAutoCodemapSource(_ file: WorkspaceFileRecord) {
+            guard autoCodemapSourceFileIDs.insert(file.id).inserted else { return }
+            autoCodemapSourceFiles.append(file)
+        }
 
         #if DEBUG
             let selectedPathsStartMS = PromptTokenRecountDiagnostics.start()
@@ -563,6 +570,7 @@ actor PromptContextAccountingService {
                     selectedPathsDebugState.beginAssembly(index: selectedPathIndex, path: path, resolvedKind: "file")
                 #endif
                 selectedFileIDs.insert(file.id)
+                recordAutoCodemapSource(file)
                 let ranges = sliceRanges(for: path, file: file, location: result.location, in: selection.slices)
                 let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshotBundle.hasRenderableCodemap(for: file)
                 let content = useSelectedCodemap ? nil : selectedFileReadResults[selectedPathIndex]?.content
@@ -605,6 +613,7 @@ actor PromptContextAccountingService {
                         return (entries, missingPaths, invalidPaths)
                     }
                     selectedFileIDs.insert(file.id)
+                    recordAutoCodemapSource(file)
                     let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshotBundle.hasRenderableCodemap(for: file)
                     let content: String?
                     if useSelectedCodemap {
@@ -708,6 +717,7 @@ actor PromptContextAccountingService {
             }
             guard !selectedFileIDs.contains(file.id) else { continue }
             selectedFileIDs.insert(file.id)
+            recordAutoCodemapSource(file)
             let content: String? = switch contentPolicy {
             case .loadContent:
                 try? await store.readContent(
@@ -738,7 +748,12 @@ actor PromptContextAccountingService {
         case .none, .selected:
             []
         case .auto:
-            Array(selection.autoCodemapPaths)
+            selection.codemapAutoEnabled
+                ? Self.derivedAutoCodemapEntryPaths(
+                    from: autoCodemapSourceFiles,
+                    codemapSnapshotBundle: codemapSnapshotBundle
+                )
+                : []
         case .complete:
             codemapSnapshotBundle.orderedSnapshots.compactMap { snapshot in
                 guard !selectedFileIDs.contains(snapshot.fileID), snapshot.fileAPI != nil else { return nil }
@@ -848,6 +863,35 @@ actor PromptContextAccountingService {
             return entry.file.relativePath
         }
         return entry.file.fullPath
+    }
+
+    private nonisolated static func derivedAutoCodemapEntryPaths(
+        from sourceFiles: [WorkspaceFileRecord],
+        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+    ) -> [String] {
+        guard !sourceFiles.isEmpty else { return [] }
+        let allFrozenAPIs = codemapSnapshotBundle.orderedSnapshots.compactMap(\.fileAPI)
+        guard !allFrozenAPIs.isEmpty else { return [] }
+
+        let referencedPaths = CodeMapExtractor.resolveReferencedFilePaths(
+            from: sourceFiles,
+            among: allFrozenAPIs
+        )
+        let referencedPathSet = Set(referencedPaths.map(StandardizedPath.absolute))
+        guard !referencedPathSet.isEmpty else { return [] }
+
+        var seen = Set<String>()
+        var paths: [String] = []
+        for snapshot in codemapSnapshotBundle.orderedSnapshots {
+            guard let api = snapshot.fileAPI else { continue }
+            let snapshotPath = StandardizedPath.absolute(snapshot.fullPath)
+            let apiPath = StandardizedPath.absolute(api.filePath)
+            guard referencedPathSet.contains(snapshotPath) || referencedPathSet.contains(apiPath),
+                  seen.insert(snapshotPath).inserted
+            else { continue }
+            paths.append(snapshotPath)
+        }
+        return paths
     }
 
     private nonisolated func sliceRanges(for path: String, file: WorkspaceFileRecord, location: WorkspacePathLocation, in slices: [String: [LineRange]]) -> [LineRange]? {

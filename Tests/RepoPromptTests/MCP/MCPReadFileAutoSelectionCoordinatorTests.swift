@@ -92,7 +92,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
     func testAuthoritativeSelectionPreservationRequiresFullCanonicalSuperset() {
         let expected = StoredSelection(
             selectedPaths: ["/workspace/A.swift", "/workspace/B.swift"],
-            autoCodemapPaths: ["/workspace/C.swift"],
+
             slices: ["/workspace/B.swift": [LineRange(start: 10, end: 20)]],
             codemapAutoEnabled: true
         )
@@ -102,7 +102,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "additive wider slice",
                 StoredSelection(
                     selectedPaths: ["/workspace/A.swift", "/workspace/B.swift", "/workspace/D.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift", "/workspace/E.swift"],
+
                     slices: ["/workspace/B.swift": [LineRange(start: 5, end: 25)]],
                     codemapAutoEnabled: true
                 ),
@@ -112,7 +112,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "full selection supersedes expected slice",
                 StoredSelection(
                     selectedPaths: ["/workspace/A.swift", "/workspace/B.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift"],
+
                     codemapAutoEnabled: true
                 ),
                 true
@@ -121,7 +121,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "unrelated selected path dropped",
                 StoredSelection(
                     selectedPaths: ["/workspace/B.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift"],
+
                     slices: ["/workspace/B.swift": [LineRange(start: 10, end: 20)]],
                     codemapAutoEnabled: true
                 ),
@@ -131,7 +131,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "expected full file demoted to slice",
                 StoredSelection(
                     selectedPaths: ["/workspace/A.swift", "/workspace/B.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift"],
+
                     slices: [
                         "/workspace/A.swift": [LineRange(start: 1, end: 2)],
                         "/workspace/B.swift": [LineRange(start: 10, end: 20)]
@@ -153,7 +153,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "slice narrowed",
                 StoredSelection(
                     selectedPaths: ["/workspace/A.swift", "/workspace/B.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift"],
+
                     slices: ["/workspace/B.swift": [LineRange(start: 11, end: 20)]],
                     codemapAutoEnabled: true
                 ),
@@ -163,7 +163,7 @@ final class MCPReadFileAutoSelectionCoordinatorTests: XCTestCase {
                 "codemap mode changed",
                 StoredSelection(
                     selectedPaths: ["/workspace/A.swift", "/workspace/B.swift"],
-                    autoCodemapPaths: ["/workspace/C.swift"],
+
                     slices: ["/workspace/B.swift": [LineRange(start: 10, end: 20)]],
                     codemapAutoEnabled: false
                 ),

@@ -143,7 +143,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             cfg: makeConfig(gitInclusion: .none, codeMapUsage: .auto),
             selection: StoredSelection(
                 selectedPaths: [selectedURL.path],
-                autoCodemapPaths: [],
+
                 codemapAutoEnabled: false
             ),
             store: store,
@@ -167,8 +167,8 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             cfg: makeConfig(gitInclusion: .none, codeMapUsage: .auto),
             selection: StoredSelection(
                 selectedPaths: [selectedURL.path],
-                autoCodemapPaths: [targetURL.path],
-                codemapAutoEnabled: false
+
+                codemapAutoEnabled: true
             ),
             store: store,
             lookupContext: lookupContext,
@@ -219,11 +219,21 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             let fileSystemService = try XCTUnwrap(loadedFileSystemService)
             await store.applyObservedCodemapResults([
                 WorkspaceObservedCodemapResult(
+                    fullPath: selectedURL.path,
+                    modificationDate: Date(),
+                    fileAPI: makeFileAPI(
+                        path: selectedURL.path,
+                        symbolName: "selectedFrozenSourceSymbol",
+                        referencedTypes: ["Target"]
+                    )
+                ),
+                WorkspaceObservedCodemapResult(
                     fullPath: targetURL.path,
                     modificationDate: Date(),
                     fileAPI: makeFileAPI(
                         path: targetURL.path,
-                        symbolName: "frozenCodemapSentinel"
+                        symbolName: "frozenCodemapSentinel",
+                        className: "Target"
                     )
                 )
             ])
@@ -242,7 +252,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
                 cfg: makeConfig(gitInclusion: .none, codeMapUsage: .auto),
                 selection: StoredSelection(
                     selectedPaths: [selectedURL.path],
-                    autoCodemapPaths: [targetURL.path],
+
                     codemapAutoEnabled: true
                 ),
                 store: store,
@@ -286,7 +296,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             )
 
             XCTAssertEqual(result.entries.filter(\.isCodemap).map(\.file.standardizedFullPath), [targetURL.standardizedFileURL.path])
-            XCTAssertTrue(result.fileTreeContent?.contains("Target.swift +") == true, result.fileTreeContent ?? "")
+            XCTAssertTrue(result.fileTreeContent?.contains("Target.swift * +") == true, result.fileTreeContent ?? "")
             XCTAssertTrue(clipboard.contains("frozenCodemapSentinel"), clipboard)
             XCTAssertTrue(result.codemapSnapshotBundle.orderedSnapshots.contains {
                 $0.fileAPI?.apiDescription.contains("frozenCodemapSentinel") == true
@@ -529,7 +539,7 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
         }
     }
 
-    func testSliceOnlyAndAutoCodemapOnlyAuthorizedPatchSelectionsRemainArtifacts() async throws {
+    func testSliceOnlyAuthorizedPatchSelectionRemainsArtifact() async throws {
         let diffText = "diff --git a/Sources/App.swift b/Sources/App.swift\n"
         let fixture = try await makeArtifactFixture(patchContent: diffText)
         let noncanonicalPatchPath = fixture.patchURL.deletingLastPathComponent().path
@@ -544,50 +554,42 @@ final class PromptContextPreAssemblyServiceTests: XCTestCase {
             ),
             [fixture.patchURL.path]
         )
-        let selections = [
-            StoredSelection(
-                slices: [fixture.patchURL.path: [LineRange(start: 1, end: 1)]],
-                codemapAutoEnabled: false
-            ),
-            StoredSelection(
-                autoCodemapPaths: [fixture.patchURL.path],
-                codemapAutoEnabled: true
-            )
-        ]
+        let selection = StoredSelection(
+            slices: [fixture.patchURL.path: [LineRange(start: 1, end: 1)]],
+            codemapAutoEnabled: false
+        )
 
-        for selection in selections {
-            let capture = ProviderCapture()
-            let finalAuthorization = try await makeFinalAuthorization(
-                fixture: fixture,
-                selection: selection
-            )
-            let request = PromptContextPreAssemblyRequest(
-                cfg: makeConfig(gitInclusion: .selected),
-                selection: selection,
-                store: fixture.store,
-                lookupContext: WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil),
-                filePathDisplay: .relative,
-                onlyIncludeRootsWithSelectedFiles: true,
-                showCodeMapMarkers: true,
-                selectedGitDiffFolderPolicy: .filesOnly,
-                reviewGitContext: fixture.reviewContext,
-                sourceTabID: finalAuthorization.tabID,
-                finalReviewAuthorization: finalAuthorization,
-                selectedGitDiffProvider: { automaticRequest in
-                    await capture.record(automaticRequest)
-                    return Self.automaticResult("automatic diff must not appear")
-                },
-                completeGitDiffProvider: { nil }
-            )
+        let capture = ProviderCapture()
+        let finalAuthorization = try await makeFinalAuthorization(
+            fixture: fixture,
+            selection: selection
+        )
+        let request = PromptContextPreAssemblyRequest(
+            cfg: makeConfig(gitInclusion: .selected),
+            selection: selection,
+            store: fixture.store,
+            lookupContext: WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil),
+            filePathDisplay: .relative,
+            onlyIncludeRootsWithSelectedFiles: true,
+            showCodeMapMarkers: true,
+            selectedGitDiffFolderPolicy: .filesOnly,
+            reviewGitContext: fixture.reviewContext,
+            sourceTabID: finalAuthorization.tabID,
+            finalReviewAuthorization: finalAuthorization,
+            selectedGitDiffProvider: { automaticRequest in
+                await capture.record(automaticRequest)
+                return Self.automaticResult("automatic diff must not appear")
+            },
+            completeGitDiffProvider: { nil }
+        )
 
-            let result = try await PromptContextPreAssemblyService.resolveStrict(request)
-            let providerInvocationCount = await capture.count()
+        let result = try await PromptContextPreAssemblyService.resolveStrict(request)
+        let providerInvocationCount = await capture.count()
 
-            XCTAssertEqual(result.gitDiff, diffText)
-            XCTAssertEqual(providerInvocationCount, 0)
-            XCTAssertEqual(result.entries.map(\.role), [.authorizedGitDiffArtifact])
-            XCTAssertEqual(result.entries.first?.lineRanges, nil)
-        }
+        XCTAssertEqual(result.gitDiff, diffText)
+        XCTAssertEqual(providerInvocationCount, 0)
+        XCTAssertEqual(result.entries.map(\.role), [.authorizedGitDiffArtifact])
+        XCTAssertEqual(result.entries.first?.lineRanges, nil)
     }
 
     func testStrictReviewRejectsChangedArtifactProvenanceBeforeAutomaticFallback() async throws {

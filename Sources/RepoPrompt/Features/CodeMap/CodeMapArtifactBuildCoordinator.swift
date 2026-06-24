@@ -3,11 +3,12 @@ import Foundation
 enum CodeMapArtifactBuildPriority: Equatable {
     case demand
     case explicit
+    case background
 
     fileprivate var taskPriority: TaskPriority {
         switch self {
         case .demand: .userInitiated
-        case .explicit: .utility
+        case .explicit, .background: .utility
         }
     }
 }
@@ -1590,16 +1591,17 @@ actor CodeMapArtifactBuildCoordinator {
         let demand = candidates.filter { $0.2.tier == .demand }
         let agedExplicit = candidates.filter { $0.2.tier == .agedExplicit }
         let explicit = candidates.filter { $0.2.tier == .explicit }
+        let background = candidates.filter { $0.2.tier == .background }
         let pool: [(CodeMapArtifactKey, Flight, SchedulingDescriptor)] = if !agedExplicit.isEmpty {
             agedExplicit
-        } else if demand.isEmpty {
-            explicit
-        } else if !explicit.isEmpty,
-                  consecutiveDemandAdmissions >= policy.maximumConsecutiveDemandAdmissions
+        } else if !demand.isEmpty,
+                  explicit.isEmpty || consecutiveDemandAdmissions < policy.maximumConsecutiveDemandAdmissions
         {
+            demand
+        } else if !explicit.isEmpty {
             explicit
         } else {
-            demand
+            background
         }
         return pool.min { lhs, rhs in
             let lhsGrant = ownerLastAdmission[lhs.2.ownerID] ?? 0
@@ -1623,6 +1625,7 @@ actor CodeMapArtifactBuildCoordinator {
         case demand
         case agedExplicit
         case explicit
+        case background
     }
 
     private func schedulingDescriptor(
@@ -1630,8 +1633,13 @@ actor CodeMapArtifactBuildCoordinator {
         now: UInt64? = nil
     ) -> SchedulingDescriptor {
         let demandWaiters = flight.waiters.values.filter { $0.priority == .demand }
-        let selected = (demandWaiters.isEmpty ? Array(flight.waiters.values) : demandWaiters)
-            .min { $0.ordinal < $1.ordinal }!
+        let explicitWaiters = flight.waiters.values.filter { $0.priority == .explicit }
+        let selected = (
+            !demandWaiters.isEmpty
+                ? demandWaiters
+                : (!explicitWaiters.isEmpty ? explicitWaiters : Array(flight.waiters.values))
+        )
+        .min { $0.ordinal < $1.ordinal }!
         let current = now ?? clock.nowNanoseconds()
         let aged = selected.priority == .explicit && duration(
             from: flight.enqueueNanoseconds ?? current,
@@ -1641,8 +1649,10 @@ actor CodeMapArtifactBuildCoordinator {
             .demand
         } else if aged {
             .agedExplicit
-        } else {
+        } else if selected.priority == .explicit {
             .explicit
+        } else {
+            .background
         }
         return SchedulingDescriptor(
             ownerID: selected.ownerID,

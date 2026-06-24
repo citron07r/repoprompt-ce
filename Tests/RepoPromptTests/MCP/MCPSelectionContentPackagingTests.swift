@@ -31,7 +31,7 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
         _ = try await window.workspaceFileContextStore.loadRoot(path: root.path)
         let selection = StoredSelection(
             selectedPaths: [selectedURL.path],
-            autoCodemapPaths: [codemapURL.path],
+
             codemapAutoEnabled: true
         )
         let missingSnapshotReply = await window.mcpServer.buildSelectionPreviewReply(
@@ -124,7 +124,6 @@ final class MCPSelectionContentPackagingTests: XCTestCase {
             )
         ])
         let selection = StoredSelection(
-            autoCodemapPaths: [codemapURL.path],
             codemapAutoEnabled: true
         )
         let frozenBundle = await window.workspaceFileContextStore.codemapSnapshotBundle(

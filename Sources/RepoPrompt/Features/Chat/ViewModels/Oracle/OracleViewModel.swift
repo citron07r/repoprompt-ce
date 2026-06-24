@@ -1625,7 +1625,6 @@ class OracleViewModel: ObservableObject {
         var updatedTab = newTab
         updatedTab.selection = StoredSelection(
             selectedPaths: session.selectedFilePaths,
-            autoCodemapPaths: [],
             slices: [:],
             codemapAutoEnabled: true
         )

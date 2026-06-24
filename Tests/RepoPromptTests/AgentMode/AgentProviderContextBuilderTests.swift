@@ -52,7 +52,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         let missingSnapshotBlock = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: StoredSelection(
                 selectedPaths: [],
-                autoCodemapPaths: [logicalCodemapURL.path],
+
                 codemapAutoEnabled: true
             ),
             tokenCap: 10000,
@@ -73,7 +73,7 @@ final class AgentProviderContextBuilderTests: XCTestCase {
         let block = await AgentProviderContextBuilder.forkFileContentsBlock(
             selection: StoredSelection(
                 selectedPaths: [fixture.logicalRoot.appendingPathComponent("Sources/App.swift").path],
-                autoCodemapPaths: [logicalCodemapURL.path],
+
                 codemapAutoEnabled: true
             ),
             tokenCap: 10000,
@@ -108,7 +108,6 @@ final class AgentProviderContextBuilderTests: XCTestCase {
             )
         ])
         let selection = StoredSelection(
-            autoCodemapPaths: [logicalURL.path],
             codemapAutoEnabled: true
         )
         let rendered = api.getFullAPIDescription(displayPath: "Sources/BranchOnly.swift")

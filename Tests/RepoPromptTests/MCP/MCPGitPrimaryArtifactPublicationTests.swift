@@ -74,7 +74,7 @@ final class MCPGitPrimaryArtifactPublicationTests: XCTestCase {
         let sourcePath = canonical.appendingPathComponent("Sources/Feature.swift").path
         let initial = StoredSelection(
             selectedPaths: [sourcePath],
-            autoCodemapPaths: [canonicalSet.map.absolutePath, "/tmp/dependency.swift"],
+
             slices: [sourcePath: [LineRange(start: 1, end: 1)]],
             codemapAutoEnabled: false
         )
@@ -91,7 +91,6 @@ final class MCPGitPrimaryArtifactPublicationTests: XCTestCase {
             readyCandidates.map(\.absolutePath)
         )
         XCTAssertEqual(merge.selection.slices, initial.slices)
-        XCTAssertEqual(merge.selection.autoCodemapPaths, ["/tmp/dependency.swift"])
         XCTAssertFalse(merge.selection.codemapAutoEnabled)
         XCTAssertEqual(
             merge.newlyAddedArtifacts.compactMap(\.clientAlias),

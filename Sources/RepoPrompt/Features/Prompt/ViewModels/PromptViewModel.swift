@@ -3571,9 +3571,6 @@ class PromptViewModel: ObservableObject {
         if lhs.selection.selectedPaths != rhs.selection.selectedPaths {
             return true
         }
-        if lhs.selection.autoCodemapPaths != rhs.selection.autoCodemapPaths {
-            return true
-        }
 
         // Other fields (promptText, slices, overrides, discover config, etc.)
         // do not currently affect the tab header and can change without
@@ -3639,7 +3636,6 @@ class PromptViewModel: ObservableObject {
         case let .preset(preset):
             let selection = StoredSelection(
                 selectedPaths: preset.selectedFilePaths,
-                autoCodemapPaths: [],
                 slices: [:],
                 codemapAutoEnabled: true
             )

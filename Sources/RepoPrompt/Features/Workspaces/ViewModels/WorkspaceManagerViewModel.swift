@@ -4395,7 +4395,6 @@ class WorkspaceManagerViewModel: ObservableObject {
         guard nextSlices != selection.slices else { return nil }
         return StoredSelection(
             selectedPaths: selection.selectedPaths,
-            autoCodemapPaths: selection.autoCodemapPaths,
             slices: nextSlices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )
@@ -4523,7 +4522,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 let expectedSelection = latestTab.selection
                 let nextSelection = StoredSelection(
                     selectedPaths: expectedSelection.selectedPaths,
-                    autoCodemapPaths: expectedSelection.autoCodemapPaths,
                     slices: nextSlices,
                     codemapAutoEnabled: expectedSelection.codemapAutoEnabled
                 )
@@ -4809,7 +4807,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                     "workspaceID": WorkspaceRestorePerfLog.shortID(wsID),
                     "tabID": WorkspaceRestorePerfLog.shortID(activeTab.id),
                     "selectedPaths": "\(activeTab.selection.selectedPaths.count)",
-                    "autoCodemapPaths": "\(activeTab.selection.autoCodemapPaths.count)",
                     "sliceFiles": "\(activeTab.selection.slices.count)",
                     "expandedFolders": "\(activeTab.expandedFolders.count)",
                     "selectedPromptIDs": "\(activeTab.selectedMetaPromptIDs.count)",
@@ -5066,7 +5063,6 @@ class WorkspaceManagerViewModel: ObservableObject {
             let tokenRecountTabID = latestAppliedTab.id
             let tokenRecountSelection = latestAppliedTab.selection
             let tokenRecountSelectedPaths = tokenRecountSelection.selectedPaths.count
-            let tokenRecountAutoCodemapPaths = tokenRecountSelection.autoCodemapPaths.count
             let tokenRecountSliceFiles = tokenRecountSelection.slices.count
             let tokenRecountSelectionFields = WorkspaceSelectionDebugSignature.unprefixedFields(for: tokenRecountSelection)
             debugSelectionOwnerTraceEvent("restore.tokenRecount.begin", workspace: activeWorkspace)
@@ -5092,7 +5088,6 @@ class WorkspaceManagerViewModel: ObservableObject {
                 fields["rootCount"] = "\(fileManager.rootFolders.count)"
                 fields["selectedFiles"] = "\(fileManager.selectedFiles.count)"
                 fields["tabSelectedPaths"] = "\(tokenRecountSelectedPaths)"
-                fields["tabAutoCodemapPaths"] = "\(tokenRecountAutoCodemapPaths)"
                 fields["tabSliceFiles"] = "\(tokenRecountSliceFiles)"
                 for (key, value) in tokenRecountSelectionFields {
                     fields[key] = value

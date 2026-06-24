@@ -233,14 +233,14 @@ enum AgentContextExportResolver {
     ) async -> AgentContextExportModel {
         let lookupContext = await lookupContext(source: source, store: store)
         let physicalSelection = lookupContext.physicalizeSelection(source.selection)
-        let codemapSnapshots = await store.codemapSnapshotDictionary()
+        let codemapSnapshotBundle = await store.codemapSnapshotBundle(rootScope: lookupContext.rootScope)
         let resolution = await resolveRows(
             selection: physicalSelection,
             store: store,
             rootScope: lookupContext.rootScope,
             profile: .uiAssisted,
             codeMapUsage: codeMapUsage,
-            codemapSnapshots: codemapSnapshots
+            codemapSnapshotBundle: codemapSnapshotBundle
         )
         let roots = await store.rootRefs(scope: lookupContext.rootScope)
         let rows = resolution.rows.map { rowEntry in
@@ -350,13 +350,11 @@ enum AgentContextExportResolver {
     static func removeRow(_ row: AgentContextExportRow, from selection: StoredSelection, lookupContext: WorkspaceLookupContext) -> StoredSelection {
         let target = StandardizedPath.absolute(row.physicalPath)
         let selectedPaths = selection.selectedPaths.filter { physicalizedKey($0, lookupContext: lookupContext) != target }
-        let autoCodemapPaths = selection.autoCodemapPaths.filter { physicalizedKey($0, lookupContext: lookupContext) != target }
         let slices = selection.slices.filter { path, ranges in
             !ranges.isEmpty && physicalizedKey(path, lookupContext: lookupContext) != target
         }
         return StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: autoCodemapPaths,
             slices: slices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )
@@ -364,16 +362,13 @@ enum AgentContextExportResolver {
 
     static func removeSelectionSnapshot(_ snapshot: StoredSelection, from selection: StoredSelection) -> StoredSelection {
         let selectedSnapshotKeys = Set(snapshot.selectedPaths.map(normalizedSelectionKey))
-        let codemapSnapshotKeys = Set(snapshot.autoCodemapPaths.map(normalizedSelectionKey))
         let sliceSnapshotKeys = Set(snapshot.slices.keys.map(normalizedSelectionKey))
         let selectedPaths = selection.selectedPaths.filter { !selectedSnapshotKeys.contains(normalizedSelectionKey($0)) }
-        let autoCodemapPaths = selection.autoCodemapPaths.filter { !codemapSnapshotKeys.contains(normalizedSelectionKey($0)) }
         let slices = selection.slices.filter { path, ranges in
             !ranges.isEmpty && !sliceSnapshotKeys.contains(normalizedSelectionKey(path))
         }
         return StoredSelection(
             selectedPaths: selectedPaths,
-            autoCodemapPaths: autoCodemapPaths,
             slices: slices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )
@@ -385,13 +380,20 @@ enum AgentContextExportResolver {
         rootScope: WorkspaceLookupRootScope,
         profile: PathLocateProfile,
         codeMapUsage: CodeMapUsage,
-        codemapSnapshots: [UUID: WorkspaceCodemapSnapshot]
+        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
     ) async -> (rows: [RowResolutionEntry], missingPaths: [String], invalidPaths: [String]) {
         var rows: [RowResolutionEntry] = []
         var missingPaths: [String] = []
         var invalidPaths: [String] = []
         var seenIDs = Set<ResolvedPromptFileEntryID>()
         var selectedFileIDs = Set<UUID>()
+        var autoCodemapSourceFiles: [WorkspaceFileRecord] = []
+        var autoCodemapSourceFileIDs = Set<UUID>()
+
+        func recordAutoCodemapSource(_ file: WorkspaceFileRecord) {
+            guard autoCodemapSourceFileIDs.insert(file.id).inserted else { return }
+            autoCodemapSourceFiles.append(file)
+        }
 
         let selectedRequests = selection.selectedPaths.map {
             WorkspacePathLookupRequest(userPath: $0, profile: profile, rootScope: rootScope)
@@ -407,14 +409,16 @@ enum AgentContextExportResolver {
                 rootScope: rootScope
             )
             guard let result else {
-                if await appendDirectoryRows(
+                let directoryRows = await appendDirectoryRows(
                     for: path,
                     store: store,
                     rootScope: rootScope,
                     selectedFileIDs: &selectedFileIDs,
                     rows: &rows,
                     seenIDs: &seenIDs
-                ) {
+                )
+                if directoryRows.handled {
+                    directoryRows.sourceFiles.forEach(recordAutoCodemapSource)
                     continue
                 }
                 missingPaths.append(path)
@@ -423,8 +427,9 @@ enum AgentContextExportResolver {
 
             if let file = result.file {
                 selectedFileIDs.insert(file.id)
+                recordAutoCodemapSource(file)
                 let ranges = sliceRanges(for: path, file: file, location: result.location, in: selection.slices)
-                let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshots[file.id]?.fileAPI != nil
+                let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshotBundle.hasRenderableCodemap(for: file)
                 let entry = ResolvedPromptFileEntry(
                     file: file,
                     isCodemap: useSelectedCodemap,
@@ -439,7 +444,8 @@ enum AgentContextExportResolver {
                 let prefix = folder.standardizedRelativePath
                 for file in files where prefix.isEmpty || file.standardizedRelativePath == prefix || file.standardizedRelativePath.hasPrefix(prefix + "/") {
                     selectedFileIDs.insert(file.id)
-                    let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshots[file.id]?.fileAPI != nil
+                    recordAutoCodemapSource(file)
+                    let useSelectedCodemap = codeMapUsage == .selected && codemapSnapshotBundle.hasRenderableCodemap(for: file)
                     let entry = ResolvedPromptFileEntry(
                         file: file,
                         isCodemap: useSelectedCodemap,
@@ -476,6 +482,7 @@ enum AgentContextExportResolver {
             }
             guard !selectedFileIDs.contains(file.id) else { continue }
             selectedFileIDs.insert(file.id)
+            recordAutoCodemapSource(file)
             let entry = ResolvedPromptFileEntry(
                 file: file,
                 lineRanges: ranges,
@@ -486,17 +493,19 @@ enum AgentContextExportResolver {
             append(entry, canRemove: true, to: &rows, seenIDs: &seenIDs)
         }
 
-        let scopedRoots = await store.rootRefs(scope: rootScope)
-        let scopedRootIDs = Set(scopedRoots.map(\.id))
         let codemapPaths: [String] = switch codeMapUsage {
         case .none, .selected:
             []
         case .auto:
-            Array(selection.autoCodemapPaths)
+            selection.codemapAutoEnabled
+                ? derivedAutoCodemapEntryPaths(
+                    from: autoCodemapSourceFiles,
+                    codemapSnapshotBundle: codemapSnapshotBundle
+                )
+                : []
         case .complete:
-            codemapSnapshots.compactMap { fileID, snapshot in
-                guard !selectedFileIDs.contains(fileID),
-                      scopedRootIDs.contains(snapshot.rootID),
+            codemapSnapshotBundle.orderedSnapshots.compactMap { snapshot in
+                guard !selectedFileIDs.contains(snapshot.fileID),
                       snapshot.fileAPI != nil
                 else { return nil }
                 return snapshot.fullPath
@@ -520,7 +529,9 @@ enum AgentContextExportResolver {
                 invalidPaths.append(path)
                 continue
             }
-            guard !selectedFileIDs.contains(file.id), codemapSnapshots[file.id]?.fileAPI != nil else { continue }
+            guard !selectedFileIDs.contains(file.id),
+                  codemapSnapshotBundle.hasRenderableCodemap(for: file)
+            else { continue }
             let entry = ResolvedPromptFileEntry(
                 file: file,
                 isCodemap: true,
@@ -532,6 +543,34 @@ enum AgentContextExportResolver {
         }
 
         return (rows, Array(Set(missingPaths)).sorted(), Array(Set(invalidPaths)).sorted())
+    }
+
+    private static func derivedAutoCodemapEntryPaths(
+        from sourceFiles: [WorkspaceFileRecord],
+        codemapSnapshotBundle: WorkspaceCodemapSnapshotBundle
+    ) -> [String] {
+        guard !sourceFiles.isEmpty else { return [] }
+        let allFrozenAPIs = codemapSnapshotBundle.orderedSnapshots.compactMap(\.fileAPI)
+        guard !allFrozenAPIs.isEmpty else { return [] }
+
+        let referencedPaths = Set(
+            CodeMapExtractor.resolveReferencedFilePaths(from: sourceFiles, among: allFrozenAPIs)
+                .map(StandardizedPath.absolute)
+        )
+        guard !referencedPaths.isEmpty else { return [] }
+
+        var seen = Set<String>()
+        var orderedPaths: [String] = []
+        for snapshot in codemapSnapshotBundle.orderedSnapshots {
+            guard let fileAPI = snapshot.fileAPI else { continue }
+            let snapshotPath = StandardizedPath.absolute(snapshot.fullPath)
+            let apiPath = StandardizedPath.absolute(fileAPI.filePath)
+            guard referencedPaths.contains(snapshotPath) || referencedPaths.contains(apiPath),
+                  seen.insert(snapshotPath).inserted
+            else { continue }
+            orderedPaths.append(snapshotPath)
+        }
+        return orderedPaths
     }
 
     private static func row(
@@ -615,9 +654,10 @@ enum AgentContextExportResolver {
         selectedFileIDs: inout Set<UUID>,
         rows: inout [RowResolutionEntry],
         seenIDs: inout Set<ResolvedPromptFileEntryID>
-    ) async -> Bool {
+    ) async -> (handled: Bool, sourceFiles: [WorkspaceFileRecord]) {
         let roots = await store.rootRefs(scope: rootScope)
         var handled = false
+        var sourceFiles: [WorkspaceFileRecord] = []
         for root in roots {
             guard let relativePrefix = directoryRelativePrefix(path, in: root) else { continue }
             let absoluteDirectory = ((root.standardizedFullPath as NSString).appendingPathComponent(relativePrefix) as NSString).standardizingPath
@@ -627,6 +667,7 @@ enum AgentContextExportResolver {
             let files = await store.files(inRoot: root.id)
             for file in files where relativePrefix.isEmpty || file.standardizedRelativePath.hasPrefix(relativePrefix + "/") {
                 selectedFileIDs.insert(file.id)
+                sourceFiles.append(file)
                 let entry = ResolvedPromptFileEntry(
                     file: file,
                     mode: .fullFile,
@@ -636,7 +677,7 @@ enum AgentContextExportResolver {
                 append(entry, canRemove: false, to: &rows, seenIDs: &seenIDs)
             }
         }
-        return handled
+        return (handled, sourceFiles)
     }
 
     private static func directoryRelativePrefix(_ path: String, in root: WorkspaceRootRef) -> String? {

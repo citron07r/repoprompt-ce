@@ -13049,7 +13049,6 @@ final class AgentModeViewModel: ObservableObject {
         guard !promotedPaths.isEmpty else { return logicalSelection == selection ? selection : logicalSelection }
 
         let existingPaths = StoredSelectionPathNormalization.standardizedPaths(logicalSelection.selectedPaths)
-        let existingAutoCodemapPaths = StoredSelectionPathNormalization.standardizedPaths(logicalSelection.autoCodemapPaths)
         let existingSlices = StoredSelectionPathNormalization.standardizedSlices(logicalSelection.slices)
         let promotedKeys = Set(promotedPaths.map { physicalizedSelectionKey($0, lookupContext: lookupContext) })
 
@@ -13059,22 +13058,17 @@ final class AgentModeViewModel: ObservableObject {
             mergedPaths.append(path)
         }
 
-        let filteredAutoCodemapPaths = existingAutoCodemapPaths.filter {
-            !promotedKeys.contains(physicalizedSelectionKey($0, lookupContext: lookupContext))
-        }
         let filteredSlices = existingSlices.filter {
             !promotedKeys.contains(physicalizedSelectionKey($0.key, lookupContext: lookupContext))
         }
 
         let normalizedSelection = StoredSelection(
             selectedPaths: existingPaths,
-            autoCodemapPaths: existingAutoCodemapPaths,
             slices: existingSlices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )
         let updatedSelection = StoredSelection(
             selectedPaths: mergedPaths,
-            autoCodemapPaths: filteredAutoCodemapPaths,
             slices: filteredSlices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )

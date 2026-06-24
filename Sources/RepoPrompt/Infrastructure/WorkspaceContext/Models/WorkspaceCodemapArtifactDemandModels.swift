@@ -1,6 +1,7 @@
 import Foundation
 
 struct WorkspaceCodemapArtifactDemandTicket: Hashable {
+    let retainID: UUID
     let requestID: UUID
     let rootEpoch: WorkspaceCodemapRootEpoch
     let fileID: UUID
@@ -37,4 +38,15 @@ enum WorkspaceCodemapArtifactDemandResult {
     case unavailable(WorkspaceCodemapArtifactDemandUnavailableReason)
     case pending(WorkspaceCodemapArtifactDemandTicket)
     case ready(WorkspaceCodemapArtifactDemandReady)
+}
+
+enum WorkspaceCodemapArtifactDemandOwnershipDisposition {
+    case notAcquired
+    case created(WorkspaceCodemapArtifactDemandTicket)
+    case joined(WorkspaceCodemapArtifactDemandTicket)
+}
+
+struct WorkspaceCodemapArtifactDemandOwnedResult {
+    let result: WorkspaceCodemapArtifactDemandResult
+    let ownership: WorkspaceCodemapArtifactDemandOwnershipDisposition
 }

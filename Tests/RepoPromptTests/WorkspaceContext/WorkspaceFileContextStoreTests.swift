@@ -359,7 +359,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         let service = PromptContextAccountingService()
         let selection = StoredSelection(
             selectedPaths: [fileURL.path],
-            autoCodemapPaths: [],
+
             slices: [:],
             codemapAutoEnabled: false
         )
@@ -4291,7 +4291,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             _ = try await store.loadRoot(path: root.path)
 
             let snapshot = await store.makeFileTreeSelectionSnapshot(
-                selection: StoredSelection(selectedPaths: [selectedURL.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: false),
+                selection: StoredSelection(selectedPaths: [selectedURL.path], slices: [:], codemapAutoEnabled: false),
                 request: WorkspaceFileTreeSnapshotRequest(
                     mode: .folders,
                     filePathDisplay: .relative,
@@ -4529,7 +4529,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         }
 
         do {
-            let caseLabel = "testSelectionMutationPromoteDemoteAndRemoveOperateOnStoredSelectionValues"
+            let caseLabel = "testSelectionMutationPromoteRemoveAndFailClosedDemoteOperateOnStoredSelectionValues"
             let root = try makeTemporaryRoot(name: "PromoteDemote")
             let swiftURL = root.appendingPathComponent("A.swift")
             let textURL = root.appendingPathComponent("notes.txt")
@@ -4540,29 +4540,39 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             _ = try await store.loadRoot(path: root.path)
             let service = WorkspaceSelectionMutationService(store: store)
             let initial = StoredSelection(
-                selectedPaths: [swiftURL.path, textURL.path],
-                autoCodemapPaths: [],
+                selectedPaths: [textURL.path],
                 slices: [swiftURL.path: [LineRange(start: 1, end: 2)]],
                 codemapAutoEnabled: true
             )
 
-            let demoted = await service.demotePaths(existing: initial, paths: [swiftURL.path, textURL.path], rawPaths: [swiftURL.path, textURL.path])
-            XCTAssertTrue(demoted.mutated, caseLabel)
-            XCTAssertEqual(demoted.selection.selectedPaths, [textURL.path], caseLabel)
-            XCTAssertEqual(demoted.selection.autoCodemapPaths, [swiftURL.path], caseLabel)
-            XCTAssertTrue(demoted.selection.slices.isEmpty, caseLabel)
-            XCTAssertEqual(demoted.codemapUnavailable, ["codemap unavailable: notes.txt"], caseLabel)
-            XCTAssertFalse(demoted.selection.codemapAutoEnabled, caseLabel)
+            let demoted = await service.demotePaths(
+                existing: initial,
+                paths: [swiftURL.path, textURL.path],
+                rawPaths: [swiftURL.path, textURL.path]
+            )
+            XCTAssertFalse(demoted.mutated, caseLabel)
+            XCTAssertEqual(demoted.selection, initial, caseLabel)
+            XCTAssertEqual(demoted.invalidPaths, ["manual codemap-only selections are no longer stored."], caseLabel)
+            XCTAssertTrue(demoted.codemapUnavailable.isEmpty, caseLabel)
 
-            let promoted = await service.promotePaths(existing: demoted.selection, paths: [swiftURL.path], rawPaths: [swiftURL.path])
+            let promoted = await service.promotePaths(
+                existing: initial,
+                paths: [swiftURL.path],
+                rawPaths: [swiftURL.path]
+            )
             XCTAssertTrue(promoted.mutated, caseLabel)
             XCTAssertEqual(Set(promoted.selection.selectedPaths), Set([swiftURL.path, textURL.path]), caseLabel)
-            XCTAssertTrue(promoted.selection.autoCodemapPaths.isEmpty, caseLabel)
-            XCTAssertFalse(promoted.selection.codemapAutoEnabled, caseLabel)
+            XCTAssertTrue(promoted.selection.slices.isEmpty, caseLabel)
+            XCTAssertTrue(promoted.selection.codemapAutoEnabled, caseLabel)
 
-            let removed = await service.removePaths(existing: promoted.selection, paths: [swiftURL.path], rawPaths: [swiftURL.path])
+            let removed = await service.removePaths(
+                existing: promoted.selection,
+                paths: [swiftURL.path],
+                rawPaths: [swiftURL.path]
+            )
             XCTAssertTrue(removed.mutated, caseLabel)
             XCTAssertEqual(removed.selection.selectedPaths, [textURL.path], caseLabel)
+            XCTAssertTrue(removed.selection.codemapAutoEnabled, caseLabel)
         }
     }
 
@@ -4582,7 +4592,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let service = WorkspaceSelectionMutationService(store: store)
             let initial = StoredSelection(
                 selectedPaths: [fullURL.path],
-                autoCodemapPaths: [],
+
                 slices: [:],
                 codemapAutoEnabled: false
             )
@@ -4629,7 +4639,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             let service = WorkspaceSelectionMutationService(store: store)
-            let initial = StoredSelection(selectedPaths: [existingURL.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: false)
+            let initial = StoredSelection(selectedPaths: [existingURL.path], slices: [:], codemapAutoEnabled: false)
 
             let addFull = await service.addPaths(
                 existing: initial,
@@ -4660,7 +4670,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             let service = WorkspaceSelectionMutationService(store: store)
-            let initial = StoredSelection(selectedPaths: [fileURL.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: false)
+            let initial = StoredSelection(selectedPaths: [fileURL.path], slices: [:], codemapAutoEnabled: false)
 
             let barePath = await service.buildManageSelectionSet(
                 paths: [fileURL.path],
@@ -4700,7 +4710,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             let service = WorkspaceSelectionMutationService(store: store)
-            let initial = StoredSelection(selectedPaths: [fileURL.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: false)
+            let initial = StoredSelection(selectedPaths: [fileURL.path], slices: [:], codemapAutoEnabled: false)
 
             let result = await service.buildManageSelectionSet(
                 paths: [],
@@ -4730,7 +4740,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let service = WorkspaceSelectionMutationService(store: store)
             let initial = StoredSelection(
                 selectedPaths: [oldFullURL.path, oldSliceURL.path],
-                autoCodemapPaths: [],
+
                 slices: [oldSliceURL.path: [LineRange(start: 1, end: 2)]],
                 codemapAutoEnabled: false
             )
@@ -5943,7 +5953,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
 
             await manager.applyStoredSelection(StoredSelection(
                 selectedPaths: [fileURL.path],
-                autoCodemapPaths: [],
+
                 slices: [fileURL.path: ranges],
                 codemapAutoEnabled: false
             ))
@@ -7568,14 +7578,13 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
 
                 await manager.applyStoredSelection(StoredSelection(
                     selectedPaths: [fileURL.path],
-                    autoCodemapPaths: [],
+
                     slices: [:],
                     codemapAutoEnabled: false
                 ))
 
                 let snapshot = manager.snapshotSelection()
                 XCTAssertEqual(snapshot.selectedPaths, [file.standardizedFullPath], caseLabel)
-                XCTAssertEqual(snapshot.autoCodemapPaths.count, 0, caseLabel)
                 XCTAssertTrue(snapshot.slices.isEmpty, caseLabel)
                 XCTAssertFalse(snapshot.codemapAutoEnabled, caseLabel)
                 XCTAssertTrue(manager.getSelectionSlicesSnapshot().isEmpty, caseLabel)
@@ -7609,7 +7618,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
 
                     await manager.hydrateSlicesForActiveTab(from: StoredSelection(
                         selectedPaths: [fileURL.path],
-                        autoCodemapPaths: [],
+
                         slices: [:],
                         codemapAutoEnabled: false
                     ))
@@ -7982,14 +7991,12 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
         #endif
 
         do {
-            let caseLabel = "testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinnerAndRetainedRecomputeResults"
+            let caseLabel = "testCodemapFileAPIAggregatePreservesForeignNestedPathFirstWinner"
             let root = try makeTemporaryRoot(name: "CodemapAPIAggregateForeignNestedPath")
             let fileA = root.appendingPathComponent("A.swift")
             let fileB = root.appendingPathComponent("B.swift")
-            let target = root.appendingPathComponent("Target.swift")
             try write("struct A {}", to: fileA)
             try write("struct B {}", to: fileB)
-            try write("struct TargetType {}", to: target)
 
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
@@ -7997,10 +8004,9 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
                 WorkspaceObservedCodemapResult(
                     fullPath: fileA.path,
                     modificationDate: Date(),
-                    fileAPI: makeFileAPI(path: fileB.path, symbolName: "foreignFirstWinner", referencedTypes: ["TargetType"])
+                    fileAPI: makeFileAPI(path: fileB.path, symbolName: "foreignFirstWinner")
                 ),
-                WorkspaceObservedCodemapResult(fullPath: fileB.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileB.path, symbolName: "ownSecondWinner")),
-                WorkspaceObservedCodemapResult(fullPath: target.path, modificationDate: Date(), fileAPI: makeFileAPI(path: target.path, symbolName: "targetSymbol", className: "TargetType"))
+                WorkspaceObservedCodemapResult(fullPath: fileB.path, modificationDate: Date(), fileAPI: makeFileAPI(path: fileB.path, symbolName: "ownSecondWinner"))
             ])
 
             let aggregate = await store.codemapFileAPIAggregate()
@@ -8008,15 +8014,6 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             XCTAssertEqual(codemapAPIProjection(Array(aggregate.firstFileAPIByStandardizedNestedPath.values)), codemapAPIProjection(Array(legacyFirstWinners.values)), caseLabel)
             XCTAssertNil(aggregate.firstFileAPIByStandardizedNestedPath[StandardizedPath.absolute(fileA.path)], caseLabel)
             XCTAssertTrue(try XCTUnwrap(aggregate.firstFileAPIByStandardizedNestedPath[StandardizedPath.absolute(fileB.path)], caseLabel).apiDescription.contains("foreignFirstWinner"), caseLabel)
-
-            let mutations = WorkspaceSelectionMutationService(store: store)
-            let ownPathSelection = StoredSelection(selectedPaths: [fileA.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: true)
-            let ownPathResult = await mutations.recomputeAutoCodemaps(ownPathSelection)
-            XCTAssertTrue(ownPathResult.autoCodemapPaths.isEmpty, caseLabel)
-
-            let foreignPathSelection = StoredSelection(selectedPaths: [fileB.path], autoCodemapPaths: [], slices: [:], codemapAutoEnabled: true)
-            let foreignPathResult = await mutations.recomputeAutoCodemaps(foreignPathSelection)
-            XCTAssertEqual(foreignPathResult.autoCodemapPaths, [target.path], caseLabel)
         }
 
         do {
@@ -8162,7 +8159,7 @@ final class WorkspaceFileContextStoreTests: XCTestCase {
             let codemapAfterDelete = await store.codemapSnapshot(rootID: record.id, relativePath: "Deleted.swift")
             XCTAssertNil(codemapAfterDelete, caseLabel)
             let snapshot = await store.makeFileTreeSelectionSnapshot(
-                selection: StoredSelection(selectedPaths: [fileURL.path], autoCodemapPaths: [fileURL.path], slices: [fileURL.path: [LineRange(start: 1, end: 1)]], codemapAutoEnabled: true),
+                selection: StoredSelection(selectedPaths: [fileURL.path], slices: [fileURL.path: [LineRange(start: 1, end: 1)]], codemapAutoEnabled: true),
                 request: WorkspaceFileTreeSnapshotRequest(
                     mode: .selected,
                     filePathDisplay: .relative,

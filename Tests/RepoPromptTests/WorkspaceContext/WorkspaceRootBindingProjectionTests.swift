@@ -206,14 +206,13 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
         )
         let logicalSelection = StoredSelection(
             selectedPaths: ["Sources/App.swift"],
-            autoCodemapPaths: ["Sources/Dependency.swift"],
+
             slices: ["Sources/Sliced.swift": [LineRange(start: 3, end: 9)]],
             codemapAutoEnabled: false
         )
 
         let physicalSelection = projection.physicalizeSelection(logicalSelection)
         XCTAssertEqual(physicalSelection.selectedPaths, ["/tmp/worktrees/project-agent/Sources/App.swift"])
-        XCTAssertEqual(physicalSelection.autoCodemapPaths, ["/tmp/worktrees/project-agent/Sources/Dependency.swift"])
         XCTAssertEqual(
             physicalSelection.slices["/tmp/worktrees/project-agent/Sources/Sliced.swift"],
             [LineRange(start: 3, end: 9)]
@@ -221,7 +220,6 @@ final class WorkspaceRootBindingProjectionTests: XCTestCase {
 
         let persistedSelection = projection.logicalizeSelection(physicalSelection)
         XCTAssertEqual(persistedSelection.selectedPaths, ["/repo/project/Sources/App.swift"])
-        XCTAssertEqual(persistedSelection.autoCodemapPaths, ["/repo/project/Sources/Dependency.swift"])
         XCTAssertEqual(
             persistedSelection.slices["/repo/project/Sources/Sliced.swift"],
             [LineRange(start: 3, end: 9)]

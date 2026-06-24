@@ -162,7 +162,6 @@ final class MCPSelectionReplyFreshnessTests: XCTestCase {
         )
         let freshSelection = StoredSelection(
             selectedPaths: [fullFile.path],
-            autoCodemapPaths: [codemapFile.path],
             slices: [slicedFile.path: [LineRange(start: 1, end: 1)]],
             codemapAutoEnabled: false
         )

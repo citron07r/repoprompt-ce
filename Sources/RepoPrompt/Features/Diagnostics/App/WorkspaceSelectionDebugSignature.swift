@@ -12,7 +12,6 @@ import Foundation
         static func counts(for selection: StoredSelection, prefix: String = "selection") -> [String: String] {
             [
                 "\(prefix)SelectedPaths": "\(selection.selectedPaths.count)",
-                "\(prefix)AutoCodemapPaths": "\(selection.autoCodemapPaths.count)",
                 "\(prefix)SliceFiles": "\(selection.slices.count)",
                 "\(prefix)SliceRanges": "\(sliceRangeCount(in: selection))",
                 "\(prefix)CodemapAutoEnabled": "\(selection.codemapAutoEnabled)"
@@ -23,7 +22,6 @@ import Foundation
             [
                 "selectionSignature": signature(for: selection),
                 "selectedPaths": "\(selection.selectedPaths.count)",
-                "autoCodemapPaths": "\(selection.autoCodemapPaths.count)",
                 "sliceFiles": "\(selection.slices.count)",
                 "sliceRanges": "\(sliceRangeCount(in: selection))",
                 "codemapAutoEnabled": "\(selection.codemapAutoEnabled)"
@@ -42,16 +40,12 @@ import Foundation
                 "v1",
                 "codemapAutoEnabled=\(selection.codemapAutoEnabled)",
                 "selectedPaths.count=\(selection.selectedPaths.count)",
-                "autoCodemapPaths.count=\(selection.autoCodemapPaths.count)",
                 "sliceFiles.count=\(selection.slices.count)",
                 "sliceRanges.count=\(sliceRangeCount(in: selection))"
             ]
 
             for path in selection.selectedPaths {
                 lines.append("selected=\(standardized(path))")
-            }
-            for path in selection.autoCodemapPaths {
-                lines.append("autoCodemap=\(standardized(path))")
             }
             let standardizedSlices = selection.slices.reduce(into: [String: [LineRange]]()) { partial, entry in
                 partial[standardized(entry.key), default: []].append(contentsOf: entry.value)

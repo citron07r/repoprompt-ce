@@ -265,7 +265,6 @@ struct WorkspaceRootBindingProjection: Equatable {
         }
         return StoredSelection(
             selectedPaths: selection.selectedPaths.map { logicalDisplayPath(forPhysicalPath: $0, display: .full) },
-            autoCodemapPaths: selection.autoCodemapPaths.map { logicalDisplayPath(forPhysicalPath: $0, display: .full) },
             slices: slices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )
@@ -279,7 +278,6 @@ struct WorkspaceRootBindingProjection: Equatable {
         }
         return StoredSelection(
             selectedPaths: selection.selectedPaths.map { translateInputPath($0) },
-            autoCodemapPaths: selection.autoCodemapPaths.map { translateInputPath($0) },
             slices: slices,
             codemapAutoEnabled: selection.codemapAutoEnabled
         )

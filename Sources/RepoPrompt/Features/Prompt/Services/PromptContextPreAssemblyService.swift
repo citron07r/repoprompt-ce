@@ -19,7 +19,6 @@ struct PromptContextPreAssemblyRequest {
     let selectedGitDiffFolderPolicy: SelectedGitDiffFolderPolicy
     let selectedGitDiffLookupProfile: PathLocateProfile
     /// Compatibility input retained for callers that previously requested hidden local-definition discovery.
-    /// Canonical codemap inclusion is now controlled exclusively by `selection.autoCodemapPaths`.
     let includeLocalDefinitionsInFileTree: Bool
     let selectedGitDiffArtifactPolicy: SelectedGitDiffArtifactPolicy
     let reviewGitContext: FrozenPromptGitReviewContext
@@ -191,9 +190,14 @@ enum PromptContextPreAssemblyService {
             codeMapUsage: request.codeMapUsage,
             codemapSnapshotBundle: codemapSnapshotBundle
         )
+        let fileTreeSelection = fileTreeSelectionForPreassembly(
+            base: ordinarySelection,
+            resolvedEntries: resolution.entries,
+            request: request
+        )
         let fileTreeContent = await resolveFileTreeContent(
             request: request,
-            physicalSelection: ordinarySelection,
+            physicalSelection: fileTreeSelection,
             codemapSnapshotBundle: codemapSnapshotBundle,
             rootScope: ordinaryRootScope
         )
@@ -379,9 +383,33 @@ enum PromptContextPreAssemblyService {
         }
         return StoredSelection(
             selectedPaths: selection.selectedPaths.filter { !isConsumed($0) },
-            autoCodemapPaths: selection.autoCodemapPaths.filter { !isConsumed($0) },
             slices: selection.slices.filter { !isConsumed($0.key) },
             codemapAutoEnabled: selection.codemapAutoEnabled
+        )
+    }
+
+    private static func fileTreeSelectionForPreassembly(
+        base: StoredSelection,
+        resolvedEntries: [ResolvedPromptFileEntry],
+        request: PromptContextPreAssemblyRequest
+    ) -> StoredSelection {
+        guard request.codeMapUsage == .auto,
+              base.codemapAutoEnabled
+        else { return base }
+
+        var selectedPaths = base.selectedPaths
+        var seen = Set(base.selectedPaths.compactMap(StoredSelectionPathNormalization.standardizedPath))
+        for entry in resolvedEntries where entry.isCodemap && entry.mode == .codemap {
+            let path = entry.file.standardizedFullPath
+            let key = StoredSelectionPathNormalization.standardizedPath(path) ?? StandardizedPath.absolute(path)
+            guard seen.insert(key).inserted else { continue }
+            selectedPaths.append(path)
+        }
+        guard selectedPaths.count != base.selectedPaths.count else { return base }
+        return StoredSelection(
+            selectedPaths: selectedPaths,
+            slices: base.slices,
+            codemapAutoEnabled: base.codemapAutoEnabled
         )
     }
 

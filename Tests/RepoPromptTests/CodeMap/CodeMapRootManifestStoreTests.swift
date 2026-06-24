@@ -153,6 +153,11 @@ final class CodeMapRootManifestStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.records.first?.artifactKey, fixture.record.artifactKey)
         XCTAssertEqual(snapshot.records.first?.contribution?.schemaVersion, 1)
         XCTAssertEqual(snapshot.records.first?.contribution?.policyVersion, 1)
+        XCTAssertNotNil(snapshot.records.first?.contributionEnvelope)
+        XCTAssertEqual(
+            snapshot.records.first?.contributionEnvelope,
+            fixture.record.contributionEnvelope
+        )
 
         let unchanged = try await store.updateCurrentManifest(
             namespace: fixture.namespace,
@@ -3092,7 +3097,21 @@ private func manifestCodecOffsets(in data: Data) throws -> ManifestCodecOffsets 
         let contributionTagOffset = cursor
         let contributionTag = data[cursor]
         cursor += 1
-        if contributionTag == 1 { cursor += 4 + 4 + CodeMapSHA256Digest.byteCount }
+        if contributionTag == 1 {
+            cursor += 4 + 4 + CodeMapSHA256Digest.byteCount
+            let definitionCount = try manifestUInt32(in: data, at: cursor)
+            cursor += 4
+            for _ in 0 ..< definitionCount {
+                let byteCount = try manifestUInt32(in: data, at: cursor)
+                cursor += 4 + Int(byteCount)
+            }
+            let referenceCount = try manifestUInt32(in: data, at: cursor)
+            cursor += 4
+            for _ in 0 ..< referenceCount {
+                let byteCount = try manifestUInt32(in: data, at: cursor)
+                cursor += 4 + Int(byteCount)
+            }
+        }
         cursor += 8 + 8 + CodeMapSHA256Digest.byteCount
         guard cursor <= payloadEnd else { throw CodeMapRootManifestModelError.corruptRecord }
         records.append(.init(

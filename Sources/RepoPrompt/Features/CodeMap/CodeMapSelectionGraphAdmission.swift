@@ -76,6 +76,7 @@ final class CodeMapSelectionGraphAdmission: @unchecked Sendable {
     private var reservedBindingCount = 0
     private var busyRejectionCount: UInt64 = 0
     private var hasFailedClosed = false
+    private var availabilityWaiters: [UUID: AvailabilityWaiter] = [:]
 
     init(policy: CodeMapSelectionGraphAdmissionPolicy = .initial) {
         self.policy = policy
@@ -127,23 +128,78 @@ final class CodeMapSelectionGraphAdmission: @unchecked Sendable {
         }
     }
 
+    func waitForAvailability(bindingCount: Int) async {
+        let id = UUID()
+        let stream = AsyncStream<Void> { continuation in
+            let isAvailable = lock.withLock {
+                guard !hasFailedClosed, canReserve(bindingCount: bindingCount) else {
+                    availabilityWaiters[id] = AvailabilityWaiter(
+                        bindingCount: bindingCount,
+                        continuation: continuation
+                    )
+                    return false
+                }
+                return true
+            }
+            if isAvailable {
+                continuation.yield()
+                continuation.finish()
+            } else {
+                continuation.onTermination = { [weak self] _ in
+                    self?.removeAvailabilityWaiter(id)
+                }
+            }
+        }
+        for await _ in stream {
+            return
+        }
+    }
+
     fileprivate func release(token: UUID, bindingCount: Int) {
-        lock.withLock {
+        let readyWaiters: [AsyncStream<Void>.Continuation] = lock.withLock {
             guard let recordedCount = reservations[token],
                   recordedCount == bindingCount,
                   recordedCount <= reservedBindingCount
             else {
                 hasFailedClosed = true
-                return
+                return []
             }
             reservations.removeValue(forKey: token)
             reservedBindingCount -= recordedCount
+            let readyIDs = availabilityWaiters.compactMap { id, waiter in
+                canReserve(bindingCount: waiter.bindingCount) ? id : nil
+            }
+            return readyIDs.compactMap { availabilityWaiters.removeValue(forKey: $0)?.continuation }
         }
+        for continuation in readyWaiters {
+            continuation.yield()
+            continuation.finish()
+        }
+    }
+
+    private func removeAvailabilityWaiter(_ id: UUID) {
+        lock.withLock {
+            _ = availabilityWaiters.removeValue(forKey: id)
+        }
+    }
+
+    private func canReserve(bindingCount: Int) -> Bool {
+        guard bindingCount >= 0 else { return false }
+        let (nextActiveCount, activeOverflow) = reservations.count.addingReportingOverflow(1)
+        let (nextBindingCount, bindingOverflow) = reservedBindingCount.addingReportingOverflow(bindingCount)
+        return !activeOverflow && !bindingOverflow &&
+            nextActiveCount <= policy.maximumActiveReservationCount &&
+            nextBindingCount <= policy.maximumReservedBindingCount
     }
 
     private func incrementBusyRejectionCount() {
         if busyRejectionCount < .max {
             busyRejectionCount += 1
         }
+    }
+
+    private struct AvailabilityWaiter {
+        let bindingCount: Int
+        let continuation: AsyncStream<Void>.Continuation
     }
 }

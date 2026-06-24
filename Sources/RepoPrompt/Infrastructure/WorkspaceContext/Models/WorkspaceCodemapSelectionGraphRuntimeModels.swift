@@ -161,18 +161,21 @@ struct WorkspaceCodemapSelectionGraphRuntimeQueryOutputBudget: Hashable {
     static let unbounded = Self(
         maximumResolvedTargetCount: .max,
         maximumResolutionCount: .max,
-        maximumReferenceFailureCount: .max
+        maximumReferenceFailureCount: .max,
+        maximumByteCount: .max
     )
 
     let maximumResolvedTargetCount: Int
     let maximumResolutionCount: Int
     let maximumReferenceFailureCount: Int
+    let maximumByteCount: Int
 }
 
 enum WorkspaceCodemapSelectionGraphRuntimeQueryOutputBudgetDimension: Hashable {
     case resolvedTargets
     case resolutions
     case referenceFailures
+    case bytes
 }
 
 struct WorkspaceCodemapSelectionGraphRuntimeQuery: Hashable {
@@ -222,6 +225,7 @@ struct WorkspaceCodemapSelectionGraphRuntimeQueryResult: Hashable {
     let definitionUniverseCoverage: WorkspaceCodemapSelectionGraphDefinitionUniverseCoverage
     let referenceFailures: [WorkspaceCodemapSelectionGraphRuntimeReferenceFailureRecord]
     let publishedSummary: WorkspaceCodemapSelectionGraphRuntimePublishedSummary
+    let materializedByteCount: Int
 }
 
 enum WorkspaceCodemapSelectionGraphRuntimeQueryUnavailableReason: Hashable {

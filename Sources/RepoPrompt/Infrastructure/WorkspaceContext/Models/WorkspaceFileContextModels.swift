@@ -639,19 +639,22 @@ struct WorkspaceCodemapUpdateEvent {
     let snapshots: [WorkspaceCodemapSnapshot]
     let removedFileIDs: [UUID]
     let isRootUnload: Bool
+    let automaticSelectionReadinessChanged: Bool
 
     init(
         rootID: UUID,
         rootPath: String,
         snapshots: [WorkspaceCodemapSnapshot],
         removedFileIDs: [UUID] = [],
-        isRootUnload: Bool = false
+        isRootUnload: Bool = false,
+        automaticSelectionReadinessChanged: Bool = false
     ) {
         self.rootID = rootID
         self.rootPath = rootPath
         self.snapshots = snapshots
         self.removedFileIDs = removedFileIDs
         self.isRootUnload = isRootUnload
+        self.automaticSelectionReadinessChanged = automaticSelectionReadinessChanged
     }
 }
 

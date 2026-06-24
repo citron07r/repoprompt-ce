@@ -111,7 +111,6 @@ enum AgentRunOracleReviewSource: Equatable {
 
         private static func normalizedSelectionIdentities(_ selection: StoredSelection) -> [String] {
             let candidates = selection.selectedPaths
-                + selection.autoCodemapPaths
                 + Array(selection.slices.keys)
             return Array(Set(candidates.compactMap(StoredSelectionPathNormalization.standardizedPath))).sorted()
         }

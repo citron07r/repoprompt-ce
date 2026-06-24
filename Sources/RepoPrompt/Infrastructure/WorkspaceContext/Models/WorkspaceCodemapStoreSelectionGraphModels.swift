@@ -47,21 +47,59 @@ struct WorkspaceCodemapStoreSelectionGraphQueryBudgetPolicy: Hashable {
         maximumReferenceFailureCount: 100_000
     )
 
+    let maximumRootCount: Int
+    let maximumRawSourceCount: Int
+    let maximumUniqueSourceCount: Int
+    let maximumSourceIssueCount: Int
     let maximumTargetCount: Int
     let maximumResolutionCount: Int
     let maximumReferenceFailureCount: Int
+    let maximumByteCount: Int
 
     init(
+        maximumRootCount: Int = 64,
+        maximumRawSourceCount: Int = 4096,
+        maximumUniqueSourceCount: Int = 4096,
+        maximumSourceIssueCount: Int = 4096,
         maximumTargetCount: Int,
         maximumResolutionCount: Int,
-        maximumReferenceFailureCount: Int
+        maximumReferenceFailureCount: Int,
+        maximumByteCount: Int = 64 * 1024 * 1024
     ) {
-        precondition(maximumTargetCount > 0)
-        precondition(maximumResolutionCount > 0)
-        precondition(maximumReferenceFailureCount > 0)
+        precondition(maximumRootCount > 0)
+        precondition(maximumRawSourceCount > 0)
+        precondition(maximumUniqueSourceCount > 0)
+        precondition(maximumSourceIssueCount >= 0)
+        precondition(maximumTargetCount >= 0)
+        precondition(maximumResolutionCount >= 0)
+        precondition(maximumReferenceFailureCount >= 0)
+        precondition(maximumByteCount >= 0)
+        self.maximumRootCount = maximumRootCount
+        self.maximumRawSourceCount = maximumRawSourceCount
+        self.maximumUniqueSourceCount = maximumUniqueSourceCount
+        self.maximumSourceIssueCount = maximumSourceIssueCount
         self.maximumTargetCount = maximumTargetCount
         self.maximumResolutionCount = maximumResolutionCount
         self.maximumReferenceFailureCount = maximumReferenceFailureCount
+        self.maximumByteCount = maximumByteCount
+    }
+
+    func remaining(
+        targetCount: Int,
+        resolutionCount: Int,
+        referenceFailureCount: Int,
+        byteCount: Int
+    ) -> Self {
+        Self(
+            maximumRootCount: maximumRootCount,
+            maximumRawSourceCount: maximumRawSourceCount,
+            maximumUniqueSourceCount: maximumUniqueSourceCount,
+            maximumSourceIssueCount: maximumSourceIssueCount,
+            maximumTargetCount: maximumTargetCount - targetCount,
+            maximumResolutionCount: maximumResolutionCount - resolutionCount,
+            maximumReferenceFailureCount: maximumReferenceFailureCount - referenceFailureCount,
+            maximumByteCount: maximumByteCount - byteCount
+        )
     }
 }
 
@@ -111,10 +149,13 @@ enum WorkspaceCodemapStoreSelectionGraphQueryBusyReason: Hashable {
 
 enum WorkspaceCodemapStoreSelectionGraphQueryBudgetReason: Hashable {
     case sourceLimit(attempted: Int, limit: Int)
+    case uniqueSourceLimit(attempted: Int, limit: Int)
+    case sourceIssueLimit(attempted: Int, limit: Int)
     case rootLimit(attempted: Int, limit: Int)
     case targetLimit(attempted: Int, limit: Int)
     case resolutionLimit(attempted: Int, limit: Int)
     case referenceFailureLimit(attempted: Int, limit: Int)
+    case byteLimit(attempted: Int, limit: Int)
     case accountingOverflow
     case runtime(
         rootEpoch: WorkspaceCodemapRootEpoch,

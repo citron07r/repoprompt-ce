@@ -37,6 +37,7 @@ actor WorkspaceCodemapBindingEngine {
         let authority: CodeMapRootManifestAuthority
         var previouslyObservedManifestAuthority: CodeMapRootManifestAuthority?
         var manifestRecords: [String: CodeMapRootManifestRecord]
+        var automaticSelectionCandidateRecords: [String: CodeMapRootManifestRecord]
         var manifestState: WorkspaceCodemapBindingManifestState
         var manifestLoadStarted: Bool
         var manifestLoadFinished: Bool
@@ -622,6 +623,139 @@ actor WorkspaceCodemapBindingEngine {
         await overlay.freeze(rootEpoch: rootEpoch)
     }
 
+    func planAutomaticSelectionCandidates(
+        _ request: WorkspaceCodemapBindingAutomaticSelectionPlanRequest
+    ) async -> WorkspaceCodemapBindingAutomaticSelectionPlanDisposition {
+        guard request.maximumMatchedCandidateCount >= 0,
+              request.candidates.count <= policy.maximumManifestAdoptionRecordCount
+        else {
+            return .budget(
+                attempted: request.candidates.count,
+                limit: policy.maximumManifestAdoptionRecordCount
+            )
+        }
+        guard case let .eligible(initial)? = roots[request.rootEpoch],
+              initial.registration.catalogGeneration > 0,
+              initial.registration.ingressGeneration > 0
+        else { return .unavailable }
+        guard request.sourceTickets.allSatisfy({ ticket in
+            ticket.rootEpoch == request.rootEpoch &&
+                ticket.catalogGeneration == initial.registration.catalogGeneration &&
+                ticket.ingressGeneration == initial.registration.ingressGeneration
+        }), request.candidates.allSatisfy({ candidate in
+            candidate.identity.rootID == request.rootEpoch.rootID &&
+                candidate.identity.rootLifetimeID == request.rootEpoch.rootLifetimeID &&
+                candidate.identity.standardizedRootPath == initial.registration.capabilityRequest.loadedRootURL.path &&
+                candidate.catalogGeneration == initial.registration.catalogGeneration &&
+                candidate.ingressGeneration == initial.registration.ingressGeneration
+        }) else { return .stale }
+
+        var pipelineIdentitiesByLanguage: [LanguageType: CodeMapPipelineIdentity] = [:]
+        do {
+            for language in Set(request.candidates.map(\.language)) {
+                let pipelineIdentity = try ensurePipeline(
+                    rootEpoch: request.rootEpoch,
+                    language: language
+                )
+                pipelineIdentitiesByLanguage[language] = pipelineIdentity
+                await ensureManifestAdoption(
+                    rootEpoch: request.rootEpoch,
+                    pipelineIdentity: pipelineIdentity
+                )
+            }
+        } catch {
+            return .unavailable
+        }
+        guard case let .eligible(session)? = roots[request.rootEpoch],
+              session.registration == initial.registration
+        else { return .stale }
+
+        guard let bundle = await overlay.freeze(rootEpoch: request.rootEpoch) else {
+            return .pending(retryAfterMilliseconds: nil)
+        }
+        defer { bundle.close() }
+        guard let graphSnapshot = try? bundle.graphSnapshot() else { return .stale }
+        var sourceReferences = Set<String>()
+        for ticket in request.sourceTickets {
+            guard let binding = graphSnapshot.bindings.first(where: { binding in
+                guard case let .resolved(completion) = binding.availability else { return false }
+                return completion.token.identity.fileID == ticket.fileID &&
+                    completion.token.requestGeneration == ticket.requestGeneration
+            }), case let .resolved(completion) = binding.availability
+            else { return .pending(retryAfterMilliseconds: nil) }
+            switch completion.outcome {
+            case let .ready(artifact):
+                sourceReferences.formUnion(CodeMapSelectionGraphContribution(
+                    artifactKey: completion.artifactKey,
+                    artifact: artifact
+                ).sortedUniqueReferences)
+            case .readyNoSymbols:
+                break
+            case .oversize, .decodeFailed, .parseFailed:
+                return .unavailable
+            }
+        }
+
+        var necessary: [WorkspaceCodemapBindingAutomaticSelectionCatalogCandidate] = []
+        var indexedCandidateCount = 0
+        var missingContributionCount = 0
+        var staleContributionCount = 0
+        let orderedCandidates = request.candidates.sorted {
+            if $0.identity.standardizedRelativePath != $1.identity.standardizedRelativePath {
+                return $0.identity.standardizedRelativePath < $1.identity.standardizedRelativePath
+            }
+            return $0.identity.fileID.uuidString < $1.identity.fileID.uuidString
+        }
+        for candidate in orderedCandidates {
+            guard let pipelineIdentity = pipelineIdentitiesByLanguage[candidate.language],
+                  let pipeline = session.pipelines[pipelineIdentity]
+            else {
+                missingContributionCount += 1
+                continue
+            }
+            let currentPathGeneration = session.pathGenerations[
+                candidate.identity.standardizedRelativePath
+            ] ?? session.registration.ingressGeneration
+            guard candidate.pathGeneration == currentPathGeneration else {
+                staleContributionCount += 1
+                continue
+            }
+            let repositoryRelativePath = repositoryPath(
+                loadedRootRelativePath: candidate.identity.standardizedRelativePath,
+                prefix: session.capability.repositoryRelativeLoadedRootPrefix
+            )
+            guard let repositoryRelativePath,
+                  let record = pipeline.automaticSelectionCandidateRecords[repositoryRelativePath],
+                  let envelope = record.contributionEnvelope
+            else {
+                missingContributionCount += 1
+                continue
+            }
+            guard envelope.identity.schemaVersion == CodeMapSelectionGraphContribution.currentSchemaVersion,
+                  envelope.identity.policyVersion == CodeMapSelectionGraphContribution.currentPolicyVersion
+            else {
+                staleContributionCount += 1
+                continue
+            }
+            indexedCandidateCount += 1
+            if !sourceReferences.isDisjoint(with: envelope.sortedUniqueDefinitions) {
+                guard necessary.count < request.maximumMatchedCandidateCount else {
+                    return .budget(
+                        attempted: necessary.count + 1,
+                        limit: request.maximumMatchedCandidateCount
+                    )
+                }
+                necessary.append(candidate)
+            }
+        }
+        return .ready(WorkspaceCodemapBindingAutomaticSelectionPlan(
+            necessaryCandidates: necessary,
+            indexedCandidateCount: indexedCandidateCount,
+            missingContributionCount: missingContributionCount,
+            staleContributionCount: staleContributionCount
+        ))
+    }
+
     func accounting() -> WorkspaceCodemapBindingEngineAccounting {
         var eligible = 0
         var unavailable = 0
@@ -758,6 +892,7 @@ actor WorkspaceCodemapBindingEngine {
         emit(.manifestLoadHit, rootEpoch: rootEpoch, numericValue: UInt64(snapshot.records.count))
 
         var prepared: [PreparedManifestAdoption] = []
+        var automaticSelectionCandidateRecords: [String: CodeMapRootManifestRecord] = [:]
         for record in snapshot.records {
             guard await manifestAdoptionIsCurrent(context, rootEpoch: rootEpoch) else {
                 await closePreparedManifestAdoptions(prepared)
@@ -823,6 +958,7 @@ actor WorkspaceCodemapBindingEngine {
                 return .superseded
             }
             guard let sourceAuthority else { continue }
+            automaticSelectionCandidateRecords[record.repositoryRelativePath] = record
 
             let coordinatorResult = try? await runtime.coordinator.resolve(
                 CodeMapArtifactBuildRequest(
@@ -1029,6 +1165,7 @@ actor WorkspaceCodemapBindingEngine {
                 return .superseded
             }
             pipeline.manifestRecords = verifiedRecords
+            pipeline.automaticSelectionCandidateRecords = automaticSelectionCandidateRecords
             for (path, generation) in pathGenerations {
                 session.pathGenerations[path] = generation
             }
@@ -1044,6 +1181,14 @@ actor WorkspaceCodemapBindingEngine {
         case .exactDuplicate:
             await closeAdoptionEntries(entries)
             releaseAdoptionReservation(scope: pipelineScope, adoptionID: adoptionID)
+            if stillCurrent,
+               case var .eligible(session)? = roots[rootEpoch],
+               var pipeline = session.pipelines[pipelineIdentity]
+            {
+                pipeline.automaticSelectionCandidateRecords = automaticSelectionCandidateRecords
+                session.pipelines[pipelineIdentity] = pipeline
+                roots[rootEpoch] = .eligible(session)
+            }
             return .terminal(adoptedReadyCount: 0)
         case .busy, .rejected:
             await closeAdoptionEntries(entries)
@@ -1599,6 +1744,7 @@ actor WorkspaceCodemapBindingEngine {
             authority: authority,
             previouslyObservedManifestAuthority: nil,
             manifestRecords: [:],
+            automaticSelectionCandidateRecords: [:],
             manifestState: .miss,
             manifestLoadStarted: false,
             manifestLoadFinished: false,
@@ -1711,7 +1857,7 @@ actor WorkspaceCodemapBindingEngine {
             if consecutiveDemandAdmissions < policy.maximumConsecutiveDemandAdmissions {
                 consecutiveDemandAdmissions += 1
             }
-        case .explicit:
+        case .explicit, .background:
             consecutiveDemandAdmissions = 0
         }
     }
@@ -1761,8 +1907,10 @@ actor WorkspaceCodemapBindingEngine {
                                                                  !hasExplicit || consecutiveDemandAdmissions < policy.maximumConsecutiveDemandAdmissions
         {
             .demand
-        } else {
+        } else if hasExplicit {
             .explicit
+        } else {
+            .background
         }
         return eligible.filter { $0.demand.priority == preferredPriority }.min { lhs, rhs in
             let leftRoot = rootLastAdmission[lhs.rootEpoch] ?? 0

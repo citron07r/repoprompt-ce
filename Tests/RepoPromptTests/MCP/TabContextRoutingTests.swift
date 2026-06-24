@@ -765,7 +765,7 @@ final class TabContextRoutingTests: XCTestCase {
         let sessionID = UUID()
         let physicalSelection = StoredSelection(
             selectedPaths: [worktreeRoot.appendingPathComponent("Sources/App.swift").path],
-            autoCodemapPaths: [worktreeRoot.appendingPathComponent("Sources/Dependency.swift").path],
+
             codemapAutoEnabled: false
         )
         let context = MCPServerViewModel.TabContextSnapshot(
@@ -802,10 +802,6 @@ final class TabContextRoutingTests: XCTestCase {
         XCTAssertEqual(
             persistedInactiveSelection.selectedPaths,
             [logicalRoot.appendingPathComponent("Sources/App.swift").path]
-        )
-        XCTAssertEqual(
-            persistedInactiveSelection.autoCodemapPaths,
-            [logicalRoot.appendingPathComponent("Sources/Dependency.swift").path]
         )
         XCTAssertEqual(window.workspaceManager.composeTab(with: activeTabID)?.selection, activeSelectionBeforePersistence)
         XCTAssertEqual(
@@ -1149,7 +1145,7 @@ final class TabContextRoutingTests: XCTestCase {
         let staleSelection = StoredSelection(selectedPaths: ["/tmp/old-agent.swift"])
         let requestedSelection = StoredSelection(
             selectedPaths: ["/tmp/new-agent.swift"],
-            autoCodemapPaths: ["/tmp/new-dependency.swift"],
+
             codemapAutoEnabled: false
         )
         let manager = FakeMCPSelectionManager(
@@ -1601,7 +1597,7 @@ final class TabContextRoutingTests: XCTestCase {
         )
         let physicalSelection = StoredSelection(
             selectedPaths: ["/tmp/worktrees/project-agent/Sources/App.swift"],
-            autoCodemapPaths: ["/tmp/worktrees/project-agent/Sources/Dependency.swift"],
+
             slices: ["/tmp/worktrees/project-agent/Sources/Sliced.swift": [LineRange(start: 1, end: 4)]],
             codemapAutoEnabled: false
         )
@@ -1612,7 +1608,6 @@ final class TabContextRoutingTests: XCTestCase {
         )
 
         XCTAssertEqual(persisted.selectedPaths, ["/repo/project/Sources/App.swift"])
-        XCTAssertEqual(persisted.autoCodemapPaths, ["/repo/project/Sources/Dependency.swift"])
         XCTAssertEqual(
             persisted.slices["/repo/project/Sources/Sliced.swift"],
             [LineRange(start: 1, end: 4)]

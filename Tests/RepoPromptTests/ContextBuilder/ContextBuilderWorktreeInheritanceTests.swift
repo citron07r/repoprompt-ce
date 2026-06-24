@@ -168,7 +168,6 @@ import XCTest
                         Set([logicalFile.path, mapPath, patchPath])
                     )
                     XCTAssertTrue(publishedSelection.slices.isEmpty)
-                    XCTAssertTrue(publishedSelection.autoCodemapPaths.isEmpty)
                     XCTAssertFalse(publishedSelection.codemapAutoEnabled)
                     let publishedSelectionRevision = fixture.contextA.window.workspaceManager
                         .selectionRevisionForMCP(
@@ -423,7 +422,7 @@ import XCTest
 
                     let slicedSelection = StoredSelection(
                         selectedPaths: [logicalFile.path],
-                        autoCodemapPaths: [],
+
                         slices: [logicalFile.path: [LineRange(start: 1, end: 1)]],
                         codemapAutoEnabled: false
                     )

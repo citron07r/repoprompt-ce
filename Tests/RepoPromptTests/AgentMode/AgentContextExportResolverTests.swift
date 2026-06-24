@@ -15,7 +15,7 @@ final class AgentContextExportResolverTests: XCTestCase {
     func testDisplayFileCountUsesExplicitSelectionAndExcludesAutoCodemaps() {
         let selection = StoredSelection(
             selectedPaths: ["A.swift", "B.swift", "C.swift", "D.swift", "E.swift"],
-            autoCodemapPaths: ["G.swift", "H.swift"],
+
             slices: [
                 "E.swift": [LineRange(start: 1, end: 2)],
                 "F.swift": [LineRange(start: 3, end: 4)]
@@ -81,9 +81,8 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(summary.sliceRangeCount, 1)
     }
 
-    func testSelectionSummaryExcludesEmptySlicesAndAutoCodemaps() {
+    func testSelectionSummaryExcludesEmptySlicesAndDoesNotInferCodemaps() {
         let selection = StoredSelection(
-            autoCodemapPaths: ["Sources/Dependency.swift"],
             slices: ["Sources/Empty.swift": []],
             codemapAutoEnabled: true
         )
@@ -146,17 +145,30 @@ final class AgentContextExportResolverTests: XCTestCase {
             }
 
             let codemapCount = 44
-            var codemapPaths: [String] = []
-            var observed: [WorkspaceObservedCodemapResult] = []
+            let dependencyTypeNames = (0 ..< codemapCount).map { "DependencyType\($0)" }
+            var observed: [WorkspaceObservedCodemapResult] = [
+                WorkspaceObservedCodemapResult(
+                    fullPath: selectedPaths[0],
+                    modificationDate: Date(),
+                    fileAPI: makeFileAPI(
+                        path: selectedPaths[0],
+                        symbol: "selectedSource",
+                        referencedTypes: dependencyTypeNames
+                    )
+                )
+            ]
             for index in 0 ..< codemapCount {
                 let fileURL = root.appendingPathComponent("Dependency\(index).swift")
-                try write("struct Dependency\(index) {}", to: fileURL)
-                codemapPaths.append(fileURL.path)
+                try write("struct \(dependencyTypeNames[index]) {}", to: fileURL)
                 observed.append(
                     WorkspaceObservedCodemapResult(
                         fullPath: fileURL.path,
                         modificationDate: Date(),
-                        fileAPI: makeFileAPI(path: fileURL.path, symbol: "dependency\(index)")
+                        fileAPI: makeFileAPI(
+                            path: fileURL.path,
+                            symbol: "dependency\(index)",
+                            className: dependencyTypeNames[index]
+                        )
                     )
                 )
             }
@@ -169,7 +181,7 @@ final class AgentContextExportResolverTests: XCTestCase {
                 promptText: "Review",
                 selection: StoredSelection(
                     selectedPaths: selectedPaths,
-                    autoCodemapPaths: codemapPaths,
+
                     slices: slices,
                     codemapAutoEnabled: true
                 ),
@@ -212,6 +224,61 @@ final class AgentContextExportResolverTests: XCTestCase {
             XCTAssertEqual(snapshotBuildCount, 1)
             XCTAssertEqual(capture.droppedSampleCount, 0)
         #endif
+    }
+
+    func testAutoCodemapExportResolutionHonorsDisabledAutoMode() async throws {
+        let root = try makeTemporaryRoot(name: "AgentExportDisabledAutoCodemap")
+        let selectedURL = root.appendingPathComponent("Selected.swift")
+        let targetURL = root.appendingPathComponent("Target.swift")
+        try write("let selected = TargetType()\n", to: selectedURL)
+        try write("struct TargetType { func target() {} }\n", to: targetURL)
+
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: root.path)
+        await store.applyObservedCodemapResults([
+            WorkspaceObservedCodemapResult(
+                fullPath: selectedURL.path,
+                modificationDate: Date(),
+                fileAPI: makeFileAPI(
+                    path: selectedURL.path,
+                    symbol: "selectedSource",
+                    referencedTypes: ["TargetType"]
+                )
+            ),
+            WorkspaceObservedCodemapResult(
+                fullPath: targetURL.path,
+                modificationDate: Date(),
+                fileAPI: makeFileAPI(
+                    path: targetURL.path,
+                    symbol: "targetCodemap",
+                    className: "TargetType"
+                )
+            )
+        ])
+        let source = AgentContextExportSource(
+            tabID: UUID(),
+            promptText: "Review",
+            selection: StoredSelection(
+                selectedPaths: [selectedURL.path],
+                codemapAutoEnabled: false
+            ),
+            selectedMetaPromptIDs: [],
+            tabName: "Agent Tab",
+            activeAgentSessionID: nil,
+            worktreeBindings: []
+        )
+
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: store,
+            filePathDisplay: .relative,
+            codeMapUsage: .auto
+        )
+
+        XCTAssertEqual(model.rows.count(where: { $0.kind == .codemap }), 0)
+        XCTAssertEqual(model.rows.count(where: { $0.kind != .codemap }), 1)
+        XCTAssertTrue(model.missingPaths.isEmpty)
+        XCTAssertTrue(model.invalidPaths.isEmpty)
     }
 
     func testWorktreeExportUsesPhysicalContentWhileDisplayingLogicalPath() async throws {
@@ -298,7 +365,7 @@ final class AgentContextExportResolverTests: XCTestCase {
         let fixture = try await makeBoundFixture()
         let original = StoredSelection(
             selectedPaths: ["Sources/App.swift", "Sources/Keep.swift"],
-            autoCodemapPaths: [],
+
             slices: ["Sources/App.swift": [LineRange(start: 1, end: 1)]],
             codemapAutoEnabled: false
         )
@@ -419,13 +486,13 @@ final class AgentContextExportResolverTests: XCTestCase {
     func testClearSelectionSnapshotPreservesNewlyAddedFiles() {
         let staleSnapshot = StoredSelection(
             selectedPaths: ["Sources/App.swift", "Sources/Keep.swift"],
-            autoCodemapPaths: ["Sources/AppCodemap.swift"],
+
             slices: ["Sources/App.swift": [LineRange(start: 1, end: 1)]],
             codemapAutoEnabled: false
         )
         let latestSelection = StoredSelection(
             selectedPaths: ["Sources/App.swift", "Sources/Keep.swift", "Sources/New.swift"],
-            autoCodemapPaths: ["Sources/AppCodemap.swift", "Sources/NewCodemap.swift"],
+
             slices: [
                 "Sources/App.swift": [LineRange(start: 1, end: 1)],
                 "Sources/New.swift": [LineRange(start: 2, end: 2)]
@@ -436,7 +503,6 @@ final class AgentContextExportResolverTests: XCTestCase {
         let updated = AgentContextExportResolver.removeSelectionSnapshot(staleSnapshot, from: latestSelection)
 
         XCTAssertEqual(updated.selectedPaths, ["Sources/New.swift"])
-        XCTAssertEqual(updated.autoCodemapPaths, ["Sources/NewCodemap.swift"])
         XCTAssertEqual(updated.slices, ["Sources/New.swift": [LineRange(start: 2, end: 2)]])
     }
 
@@ -804,11 +870,16 @@ final class AgentContextExportResolverTests: XCTestCase {
         )
     }
 
-    private func makeFileAPI(path: String, symbol: String) -> FileAPI {
+    private func makeFileAPI(
+        path: String,
+        symbol: String,
+        className: String? = nil,
+        referencedTypes: [String] = []
+    ) -> FileAPI {
         FileAPI(
             filePath: path,
             imports: [],
-            classes: [],
+            classes: className.map { [ClassInfo(name: $0, methods: [], properties: [])] } ?? [],
             functions: [
                 FunctionInfo(
                     name: symbol,
@@ -821,7 +892,7 @@ final class AgentContextExportResolverTests: XCTestCase {
             enums: [],
             globalVars: [],
             macros: [],
-            referencedTypes: []
+            referencedTypes: referencedTypes
         )
     }
 

@@ -927,7 +927,7 @@ final class PersistentAgentModeMCPReadFileConnectionTests: XCTestCase {
                     fixture.liveFileURL.path,
                     fixture.worktreeOnlyLogicalURL.path
                 ],
-                autoCodemapPaths: selectionAdvancedAfterIngressSnapshot.selection.autoCodemapPaths,
+
                 slices: [
                     fixture.liveFileURL.path: [LineRange(start: 1, end: 20)],
                     fixture.worktreeOnlyLogicalURL.path: [LineRange(start: 30, end: 40)]

@@ -40,6 +40,10 @@ actor WorkspaceCodemapSelectionGraph {
         self.diagnostics = diagnostics
     }
 
+    func waitForProcessAdmissionAvailability(bindingCount: Int) async {
+        await admission.waitForAvailability(bindingCount: bindingCount)
+    }
+
     func rebuild(
         from snapshot: WorkspaceCodemapLiveGraphSnapshot
     ) async -> WorkspaceCodemapSelectionGraphRuntimeRebuildDisposition {
@@ -323,6 +327,21 @@ actor WorkspaceCodemapSelectionGraph {
             return .unavailable(.budgetExceeded)
         }
 
+        var materializedByteCount = 128
+        func reserveMaterializedBytes(_ byteCount: Int) -> Bool {
+            let (next, overflow) = materializedByteCount.addingReportingOverflow(byteCount)
+            guard !overflow, next <= query.outputBudget.maximumByteCount else { return false }
+            materializedByteCount = next
+            return true
+        }
+        let (selectedSourceBytes, selectedSourceByteOverflow) =
+            selectedSources.count.multipliedReportingOverflow(by: 24)
+        guard !selectedSourceByteOverflow,
+              reserveMaterializedBytes(selectedSourceBytes)
+        else {
+            return .unavailable(.outputBudgetExceeded(.bytes))
+        }
+
         let selectedFileIDs = Set(generationsByFileID.keys)
         var coverage: [WorkspaceCodemapSelectionGraphRuntimeSourceCoverage] = []
         var resolutions: [IndexedResolution] = []
@@ -331,13 +350,22 @@ actor WorkspaceCodemapSelectionGraph {
 
         for source in selectedSources {
             guard let sourceIndex = shard.nodeIndexByFileID[source.fileID] else {
+                guard reserveMaterializedBytes(32) else {
+                    return .unavailable(.outputBudgetExceeded(.bytes))
+                }
                 coverage.append(.init(source: source, state: .missing))
                 continue
             }
             let sourceNode = shard.nodes[sourceIndex]
             guard sourceNode.requestGeneration == source.requestGeneration else {
+                guard reserveMaterializedBytes(32) else {
+                    return .unavailable(.outputBudgetExceeded(.bytes))
+                }
                 coverage.append(.init(source: source, state: .stale))
                 continue
+            }
+            guard reserveMaterializedBytes(32) else {
+                return .unavailable(.outputBudgetExceeded(.bytes))
             }
             coverage.append(.init(source: source, state: .covered))
             let sourceEndpoint = shard.endpoint(at: sourceIndex)
@@ -349,6 +377,9 @@ actor WorkspaceCodemapSelectionGraph {
                     }
                     guard failures.count < query.outputBudget.maximumReferenceFailureCount else {
                         return .unavailable(.outputBudgetExceeded(.referenceFailures))
+                    }
+                    guard reserveMaterializedBytes(64) else {
+                        return .unavailable(.outputBudgetExceeded(.bytes))
                     }
                     failures.append(.init(
                         sourceIndex: sourceIndex,
@@ -369,10 +400,16 @@ actor WorkspaceCodemapSelectionGraph {
                     guard targetIndices.count < query.outputBudget.maximumResolvedTargetCount else {
                         return .unavailable(.outputBudgetExceeded(.resolvedTargets))
                     }
+                    guard reserveMaterializedBytes(56) else {
+                        return .unavailable(.outputBudgetExceeded(.bytes))
+                    }
                     targetIndices.insert(targetIndex)
                 }
                 guard resolutions.count < query.outputBudget.maximumResolutionCount else {
                     return .unavailable(.outputBudgetExceeded(.resolutions))
+                }
+                guard reserveMaterializedBytes(112) else {
+                    return .unavailable(.outputBudgetExceeded(.bytes))
                 }
                 resolutions.append(.init(
                     sourceIndex: sourceIndex,
@@ -386,6 +423,13 @@ actor WorkspaceCodemapSelectionGraph {
                 }
                 guard failures.count < query.outputBudget.maximumReferenceFailureCount else {
                     return .unavailable(.outputBudgetExceeded(.referenceFailures))
+                }
+                let (failureBytes, failureByteOverflow) =
+                    failure.referencedName.utf8.count.addingReportingOverflow(64)
+                guard !failureByteOverflow,
+                      reserveMaterializedBytes(failureBytes)
+                else {
+                    return .unavailable(.outputBudgetExceeded(.bytes))
                 }
                 failures.append(.init(
                     sourceIndex: sourceIndex,
@@ -419,7 +463,8 @@ actor WorkspaceCodemapSelectionGraph {
                 candidateCount: .unknown
             ),
             referenceFailures: failures.map(\.record),
-            publishedSummary: shard.summary
+            publishedSummary: shard.summary,
+            materializedByteCount: materializedByteCount
         ))
     }
 

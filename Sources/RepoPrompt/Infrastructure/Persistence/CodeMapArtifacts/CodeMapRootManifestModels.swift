@@ -345,6 +345,48 @@ struct CodeMapRootManifestContributionIdentity: Hashable {
     }
 }
 
+/// Persisted, path-free symbol metadata used only to plan bounded automatic-selection demand.
+/// A matching envelope never authorizes publication; normal locator/CAS/demand validation still does.
+struct CodeMapRootManifestContributionEnvelope: Hashable {
+    static let maximumNameCount = 16384
+    static let maximumNameByteCount = 16 * 1024
+
+    let identity: CodeMapRootManifestContributionIdentity
+    let sortedUniqueDefinitions: [String]
+    let sortedUniqueReferences: [String]
+
+    init(_ contribution: CodeMapSelectionGraphContribution) {
+        identity = CodeMapRootManifestContributionIdentity(contribution)
+        sortedUniqueDefinitions = contribution.sortedUniqueDefinitions
+        sortedUniqueReferences = contribution.sortedUniqueReferences
+    }
+
+    fileprivate init(
+        identity: CodeMapRootManifestContributionIdentity,
+        artifactKey: CodeMapArtifactKey,
+        definitions: [String],
+        references: [String]
+    ) throws {
+        guard definitions.count <= Self.maximumNameCount,
+              references.count <= Self.maximumNameCount,
+              definitions.allSatisfy({ $0.utf8.count <= Self.maximumNameByteCount }),
+              references.allSatisfy({ $0.utf8.count <= Self.maximumNameByteCount })
+        else { throw CodeMapRootManifestModelError.invalidContribution }
+        let contribution = CodeMapSelectionGraphContribution(
+            artifactKey: artifactKey,
+            definitions: definitions,
+            references: references
+        )
+        guard identity == CodeMapRootManifestContributionIdentity(contribution),
+              definitions == contribution.sortedUniqueDefinitions,
+              references == contribution.sortedUniqueReferences
+        else { throw CodeMapRootManifestModelError.invalidContribution }
+        self.identity = identity
+        sortedUniqueDefinitions = definitions
+        sortedUniqueReferences = references
+    }
+}
+
 /// A clean Git binding. Construction requires the existing clean-source/CAS association proof.
 struct CodeMapRootManifestRecord: Hashable {
     private enum Construction: Equatable {
@@ -357,8 +399,14 @@ struct CodeMapRootManifestRecord: Hashable {
     let artifactKey: CodeMapArtifactKey
     let gitMode: CodeMapRootManifestGitMode
     let outcome: CodeMapRootManifestOutcome
-    let contribution: CodeMapRootManifestContributionIdentity?
+    let contributionEnvelope: CodeMapRootManifestContributionEnvelope?
+    let legacyContributionIdentity: CodeMapRootManifestContributionIdentity?
     let bindingGeneration: UInt64
+
+    var contribution: CodeMapRootManifestContributionIdentity? {
+        contributionEnvelope?.identity ?? legacyContributionIdentity
+    }
+
     let sourceAuthorityGeneration: UInt64
     let sourceAuthorityDigest: CodeMapSHA256Digest
     private let construction: Construction
@@ -422,7 +470,8 @@ struct CodeMapRootManifestRecord: Hashable {
             artifactKey: association.artifactKey,
             gitMode: gitMode,
             outcome: outcome,
-            contribution: contribution.map(CodeMapRootManifestContributionIdentity.init),
+            contributionEnvelope: contribution.map(CodeMapRootManifestContributionEnvelope.init),
+            legacyContributionIdentity: nil,
             authority: authority,
             bindingGeneration: bindingGeneration,
             construction: .verifiedAssociation
@@ -436,7 +485,8 @@ struct CodeMapRootManifestRecord: Hashable {
         artifactKey: CodeMapArtifactKey,
         gitMode: CodeMapRootManifestGitMode,
         outcome: CodeMapRootManifestOutcome,
-        contribution: CodeMapRootManifestContributionIdentity?,
+        contributionEnvelope: CodeMapRootManifestContributionEnvelope?,
+        legacyContributionIdentity: CodeMapRootManifestContributionIdentity?,
         authority: CodeMapRootManifestAuthority,
         bindingGeneration: UInt64,
         construction: Construction
@@ -458,18 +508,23 @@ struct CodeMapRootManifestRecord: Hashable {
         else {
             throw CodeMapRootManifestModelError.invalidAuthority
         }
+        let contributionIdentity = contributionEnvelope?.identity ?? legacyContributionIdentity
+        guard contributionEnvelope == nil || legacyContributionIdentity == nil else {
+            throw CodeMapRootManifestModelError.invalidContribution
+        }
         switch outcome {
         case .ready, .readyNoSymbols:
-            guard contribution != nil else { throw CodeMapRootManifestModelError.invalidContribution }
+            guard contributionIdentity != nil else { throw CodeMapRootManifestModelError.invalidContribution }
         case .terminalOversize, .terminalDecodeFailure, .terminalParseFailure:
-            guard contribution == nil else { throw CodeMapRootManifestModelError.invalidContribution }
+            guard contributionIdentity == nil else { throw CodeMapRootManifestModelError.invalidContribution }
         }
         self.repositoryRelativePath = repositoryRelativePath
         self.locatorIdentity = locatorIdentity
         self.artifactKey = artifactKey
         self.gitMode = gitMode
         self.outcome = outcome
-        self.contribution = contribution
+        self.contributionEnvelope = contributionEnvelope
+        self.legacyContributionIdentity = legacyContributionIdentity
         self.bindingGeneration = bindingGeneration
         sourceAuthorityGeneration = authority.authorityGeneration
         sourceAuthorityDigest = authority.digest
@@ -479,22 +534,31 @@ struct CodeMapRootManifestRecord: Hashable {
     fileprivate static func decodeCanonical(
         from reader: inout CodeMapRootManifestReader,
         namespace: CodeMapRootManifestNamespace,
-        authority: CodeMapRootManifestAuthority
+        authority: CodeMapRootManifestAuthority,
+        codecVersion: UInt32
     ) throws -> Self {
         let path = try reader.readString(maximumByteCount: 4 * 1024)
         let locatorBytes = try reader.readLengthPrefixedData(maximumByteCount: 32 * 1024)
         let keyBytes = try reader.readLengthPrefixedData(maximumByteCount: 32 * 1024)
+        let locator: GitBlobCodeMapLocatorIdentity
+        let key: CodeMapArtifactKey
+        do {
+            locator = try GitBlobCodeMapLocatorIdentity(canonicalBytes: locatorBytes)
+            key = try CodeMapArtifactKey(canonicalBytes: keyBytes)
+        } catch {
+            throw CodeMapRootManifestModelError.corruptRecord
+        }
         guard let mode = try CodeMapRootManifestGitMode(rawValue: reader.readUInt8()),
               let outcome = try CodeMapRootManifestOutcome(rawValue: reader.readUInt8())
         else {
             throw CodeMapRootManifestModelError.corruptRecord
         }
-        let contribution: CodeMapRootManifestContributionIdentity?
+        let contributionIdentity: CodeMapRootManifestContributionIdentity?
         switch try reader.readUInt8() {
         case 0:
-            contribution = nil
+            contributionIdentity = nil
         case 1:
-            contribution = try CodeMapRootManifestContributionIdentity(
+            contributionIdentity = try CodeMapRootManifestContributionIdentity(
                 schemaVersion: reader.readUInt32(),
                 policyVersion: reader.readUInt32(),
                 digest: CodeMapSHA256Digest(
@@ -504,19 +568,44 @@ struct CodeMapRootManifestRecord: Hashable {
         default:
             throw CodeMapRootManifestModelError.corruptRecord
         }
+        let contributionEnvelope: CodeMapRootManifestContributionEnvelope?
+        if codecVersion >= 2, let contributionIdentity {
+            let definitionCount = try Int(reader.readUInt32())
+            guard definitionCount <= CodeMapRootManifestContributionEnvelope.maximumNameCount else {
+                throw CodeMapRootManifestModelError.invalidContribution
+            }
+            var definitions: [String] = []
+            definitions.reserveCapacity(definitionCount)
+            for _ in 0 ..< definitionCount {
+                try definitions.append(reader.readString(
+                    maximumByteCount: CodeMapRootManifestContributionEnvelope.maximumNameByteCount
+                ))
+            }
+            let referenceCount = try Int(reader.readUInt32())
+            guard referenceCount <= CodeMapRootManifestContributionEnvelope.maximumNameCount else {
+                throw CodeMapRootManifestModelError.invalidContribution
+            }
+            var references: [String] = []
+            references.reserveCapacity(referenceCount)
+            for _ in 0 ..< referenceCount {
+                try references.append(reader.readString(
+                    maximumByteCount: CodeMapRootManifestContributionEnvelope.maximumNameByteCount
+                ))
+            }
+            contributionEnvelope = try CodeMapRootManifestContributionEnvelope(
+                identity: contributionIdentity,
+                artifactKey: key,
+                definitions: definitions,
+                references: references
+            )
+        } else {
+            contributionEnvelope = nil
+        }
         let bindingGeneration = try reader.readUInt64()
         let sourceAuthorityGeneration = try reader.readUInt64()
         let sourceAuthorityDigest = try CodeMapSHA256Digest(
             bytes: reader.readData(count: CodeMapSHA256Digest.byteCount)
         )
-        let locator: GitBlobCodeMapLocatorIdentity
-        let key: CodeMapArtifactKey
-        do {
-            locator = try GitBlobCodeMapLocatorIdentity(canonicalBytes: locatorBytes)
-            key = try CodeMapArtifactKey(canonicalBytes: keyBytes)
-        } catch {
-            throw CodeMapRootManifestModelError.corruptRecord
-        }
         let record = try Self(
             namespace: namespace,
             repositoryRelativePath: path,
@@ -524,7 +613,8 @@ struct CodeMapRootManifestRecord: Hashable {
             artifactKey: key,
             gitMode: mode,
             outcome: outcome,
-            contribution: contribution,
+            contributionEnvelope: contributionEnvelope,
+            legacyContributionIdentity: contributionEnvelope == nil ? contributionIdentity : nil,
             authority: authority,
             bindingGeneration: bindingGeneration,
             construction: .decodedCanonical
@@ -543,7 +633,8 @@ struct CodeMapRootManifestRecord: Hashable {
             lhs.artifactKey == rhs.artifactKey &&
             lhs.gitMode == rhs.gitMode &&
             lhs.outcome == rhs.outcome &&
-            lhs.contribution == rhs.contribution &&
+            lhs.contributionEnvelope == rhs.contributionEnvelope &&
+            lhs.legacyContributionIdentity == rhs.legacyContributionIdentity &&
             lhs.bindingGeneration == rhs.bindingGeneration &&
             lhs.sourceAuthorityGeneration == rhs.sourceAuthorityGeneration &&
             lhs.sourceAuthorityDigest == rhs.sourceAuthorityDigest
@@ -555,7 +646,8 @@ struct CodeMapRootManifestRecord: Hashable {
         hasher.combine(artifactKey)
         hasher.combine(gitMode)
         hasher.combine(outcome)
-        hasher.combine(contribution)
+        hasher.combine(contributionEnvelope)
+        hasher.combine(legacyContributionIdentity)
         hasher.combine(bindingGeneration)
         hasher.combine(sourceAuthorityGeneration)
         hasher.combine(sourceAuthorityDigest)
@@ -610,7 +702,8 @@ struct CodeMapRootManifestSnapshot: Hashable {
 
 enum CodeMapRootManifestCodec {
     static let magic = Data("RPCMRMF1".utf8)
-    static let version: UInt32 = 1
+    static let version: UInt32 = 2
+    private static let legacyVersion: UInt32 = 1
     static let maximumRecordCount = 100_000
     static let maximumEncodedByteCount = 32 * 1024 * 1024
 
@@ -640,6 +733,17 @@ enum CodeMapRootManifestCodec {
                 writer.append(contribution.schemaVersion)
                 writer.append(contribution.policyVersion)
                 writer.append(contribution.digest.bytes)
+                guard let envelope = record.contributionEnvelope else {
+                    throw CodeMapRootManifestModelError.invalidContribution
+                }
+                writer.append(UInt32(envelope.sortedUniqueDefinitions.count))
+                for name in envelope.sortedUniqueDefinitions {
+                    writer.appendString(name)
+                }
+                writer.append(UInt32(envelope.sortedUniqueReferences.count))
+                for name in envelope.sortedUniqueReferences {
+                    writer.appendString(name)
+                }
             } else {
                 writer.append(UInt8(0))
             }
@@ -682,9 +786,11 @@ enum CodeMapRootManifestCodec {
             throw CodeMapRootManifestModelError.corruptRecord
         }
         var reader = CodeMapRootManifestReader(data: data.prefix(payloadEnd))
-        guard try reader.readData(count: magic.count) == magic,
-              try reader.readUInt32() == version
-        else {
+        guard try reader.readData(count: magic.count) == magic else {
+            throw CodeMapRootManifestModelError.corruptRecord
+        }
+        let codecVersion = try reader.readUInt32()
+        guard codecVersion == version || codecVersion == legacyVersion else {
             throw CodeMapRootManifestModelError.corruptRecord
         }
         let namespaceBytes = try reader.readLengthPrefixedData(
@@ -717,7 +823,8 @@ enum CodeMapRootManifestCodec {
                 CodeMapRootManifestRecord.decodeCanonical(
                     from: &reader,
                     namespace: namespace,
-                    authority: authority
+                    authority: authority,
+                    codecVersion: codecVersion
                 )
             )
         }
@@ -729,8 +836,10 @@ enum CodeMapRootManifestCodec {
             lastAccessEpochSeconds: lastAccessEpochSeconds,
             records: records
         )
-        guard try encode(snapshot: snapshot) == data else {
-            throw CodeMapRootManifestModelError.corruptRecord
+        if codecVersion == version {
+            guard try encode(snapshot: snapshot) == data else {
+                throw CodeMapRootManifestModelError.corruptRecord
+            }
         }
         return snapshot
     }

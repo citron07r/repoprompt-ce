@@ -62,7 +62,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
             overrideMode: .chat,
             selectionOverride: StoredSelection(
                 selectedPaths: [selectedURL.path],
-                autoCodemapPaths: [],
+
                 codemapAutoEnabled: false
             ),
             lookupContextOverride: WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil)
@@ -76,7 +76,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
             overrideMode: .chat,
             selectionOverride: StoredSelection(
                 selectedPaths: [selectedURL.path],
-                autoCodemapPaths: [targetURL.path],
+
                 codemapAutoEnabled: true
             ),
             lookupContextOverride: WorkspaceLookupContext(rootScope: .allLoaded, bindingProjection: nil)
@@ -112,7 +112,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         let tabID = UUID()
         let emptyCanonicalSelection = StoredSelection(
             selectedPaths: [selectedURL.path],
-            autoCodemapPaths: [],
+
             codemapAutoEnabled: false
         )
         let (window, _) = await makeWindow(
@@ -163,7 +163,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
 
         let canonicalSelection = StoredSelection(
             selectedPaths: [selectedURL.path],
-            autoCodemapPaths: [targetURL.path],
+
             codemapAutoEnabled: true
         )
         _ = await window.selectionCoordinator.persistActiveSelection(
@@ -177,7 +177,6 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
         let capturedSelection = window.selectionCoordinator.activeSelectionSnapshot(
             flushPendingUI: true
         ).selection
-        XCTAssertEqual(capturedSelection.autoCodemapPaths, [targetURL.standardizedFileURL.path])
         let preAssembly = await window.promptManager.preAssemblePromptContext(
             cfg: makeAutoConfig(),
             selection: capturedSelection,
@@ -281,7 +280,7 @@ final class PromptCanonicalCodemapPackagingTests: XCTestCase {
                 promptText: "Inspect the frozen worktree context.",
                 selection: StoredSelection(
                     selectedPaths: [logicalSelectedURL.path],
-                    autoCodemapPaths: [logicalTargetURL.path],
+
                     slices: [logicalSelectedURL.path: [LineRange(start: 2, end: 2)]],
                     codemapAutoEnabled: true
                 ),

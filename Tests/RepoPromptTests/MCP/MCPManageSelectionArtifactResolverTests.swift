@@ -56,7 +56,7 @@ final class MCPManageSelectionArtifactResolverTests: XCTestCase {
 
         let selected = StoredSelection(
             selectedPaths: ["/ordinary.swift", patch.absolutePath],
-            autoCodemapPaths: [fixture.published.map.absolutePath],
+
             codemapAutoEnabled: false
         )
         let removal = try await resolver.resolve(
