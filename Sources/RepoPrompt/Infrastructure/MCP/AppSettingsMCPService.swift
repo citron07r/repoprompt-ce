@@ -1278,8 +1278,10 @@ private enum AppSettingsMCPRegistry {
     /// - sync disabled
     /// - sibling already holds the same value (avoids spurious disk writes and
     ///   ensures a single notification fires per MCP write)
-    /// A null write (clear) is mirrored as a null on the sibling to keep behavior
-    /// symmetric with the toggle-driven UI path.
+    /// A real model write is mirrored to the sibling. A null/blank clear of the chat model is
+    /// NOT mirrored into the Oracle `models.planning_model` (which is never auto-healed) —
+    /// matching the GUI sync guard; clearing the Oracle stays an explicit
+    /// `models.planning_model = null` write. A null clear of planning still mirrors to compose.
     @MainActor
     private static func postModelRawDidWrite(
         store: GlobalSettingsStore,
@@ -1309,7 +1311,14 @@ private enum AppSettingsMCPRegistry {
             if siblingCurrent != newValue {
                 switch siblingKey {
                 case "models.planning_model":
-                    store.setPlanningModelRaw(newValue, reason: "app_settings.models.sync_sibling")
+                    // Symmetric with the GUI sync fix (GlobalSettingsStore.setPreferredComposeModelRaw):
+                    // a blank/nil chat model must NOT be mirrored into the Oracle planningModel,
+                    // which is deliberately never auto-healed and would otherwise persist as
+                    // "Oracle reset to nothing". Clearing the Oracle stays an explicit
+                    // `app_settings models.planning_model = null` action, not a sync side effect.
+                    if let newValue, !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        store.setPlanningModelRaw(newValue, reason: "app_settings.models.sync_sibling")
+                    }
                 case "models.preferred_compose_model":
                     store.setPreferredComposeModelRaw(newValue, reason: "app_settings.models.sync_sibling")
                 default:
