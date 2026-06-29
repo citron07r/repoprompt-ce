@@ -8280,9 +8280,15 @@ final class WorkspaceFileContextStoreCodemapSeamTests: XCTestCase {
         let source = try XCTUnwrap(coldFiles.first {
             $0.standardizedRelativePath == "Sources/Source.swift"
         })
+        // This test verifies cold CAS candidate discovery/publication semantics, not the mutation
+        // service's default short round-bound transient pending behavior. Under CI load, the
+        // background candidate demand may need more than six status checks to become ready.
         let service = WorkspaceSelectionMutationService(
             store: coldStore,
-            automaticSelectionPolicy: .init(maximumTotalWait: .seconds(10))
+            automaticSelectionPolicy: .init(
+                maximumReadinessRounds: 64,
+                maximumTotalWait: .seconds(10)
+            )
         )
         let result = try await service.resolveAutomaticCodemapSelection(
             sourceFileIDs: [source.id],
