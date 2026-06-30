@@ -17,6 +17,9 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
     case claudeCode
     case codex
     case cursor
+    case droid
+    case junie
+    case pi
     case openAI
 
     var id: String {
@@ -28,6 +31,9 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .claudeCode: "Claude Code"
         case .codex: "Codex CLI"
         case .cursor: "Cursor CLI"
+        case .droid: "Droid CLI"
+        case .junie: "Junie CLI"
+        case .pi: "Pi CLI"
         case .openAI: "OpenAI API"
         }
     }
@@ -37,6 +43,9 @@ enum RecommendationProviderKind: String, CaseIterable, Identifiable {
         case .claudeCode: "Claude"
         case .codex: "Codex"
         case .cursor: "Cursor"
+        case .droid: "Droid"
+        case .junie: "Junie"
+        case .pi: "Pi"
         case .openAI: "OpenAI"
         }
     }
@@ -55,17 +64,20 @@ struct ProviderStatusSnapshot {
     let claudeCodeCLI: Availability
     let codexCLI: Availability
     let cursorCLI: Availability
+    let droidCLI: Availability
+    let junieCLI: Availability
+    let piCLI: Availability
 
     let openAI: Availability
 
     /// Returns true if at least one provider is ready for chat.
     var hasAnyReadyProvider: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI, openAI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, droidCLI, junieCLI, piCLI, openAI].contains(.ready)
     }
 
     /// Returns true if any CLI agent is ready.
     var hasAnyCLIAgentReady: Bool {
-        [claudeCodeCLI, codexCLI, cursorCLI].contains(.ready)
+        [claudeCodeCLI, codexCLI, cursorCLI, droidCLI, junieCLI, piCLI].contains(.ready)
     }
 
     /// Returns a copy with providers outside the enabled set treated as unavailable.
@@ -74,6 +86,9 @@ struct ProviderStatusSnapshot {
             claudeCodeCLI: enabledProviders.contains(.claudeCode) ? claudeCodeCLI : .notConfigured,
             codexCLI: enabledProviders.contains(.codex) ? codexCLI : .notConfigured,
             cursorCLI: enabledProviders.contains(.cursor) ? cursorCLI : .notConfigured,
+            droidCLI: enabledProviders.contains(.droid) ? droidCLI : .notConfigured,
+            junieCLI: enabledProviders.contains(.junie) ? junieCLI : .notConfigured,
+            piCLI: enabledProviders.contains(.pi) ? piCLI : .notConfigured,
             openAI: enabledProviders.contains(.openAI) ? openAI : .notConfigured
         )
     }

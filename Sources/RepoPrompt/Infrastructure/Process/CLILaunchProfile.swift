@@ -15,6 +15,9 @@ enum CLILaunchProfiles {
         "~/.opencode/bin"
     ]
     static let cursorProviderSpecificPaths: [String] = []
+    static let droidProviderSpecificPaths: [String] = []
+    static let junieProviderSpecificPaths: [String] = []
+    static let piProviderSpecificPaths: [String] = []
 
     /// Preserve the committed Codex hint order exactly: shell/package-manager
     /// fallbacks first, then Codex.app resources. System bins are intentionally not
@@ -58,6 +61,24 @@ enum CLILaunchProfiles {
         commandName: "cursor-agent",
         preferredBasenames: ["cursor-agent"],
         supplementalSearchPaths: nativeDefaultsSupplemented(with: cursorProviderSpecificPaths)
+    )
+
+    static let droid = CLILaunchProfile(
+        commandName: "droid",
+        preferredBasenames: ["droid"],
+        supplementalSearchPaths: nativeDefaultsSupplemented(with: droidProviderSpecificPaths)
+    )
+
+    static let junie = CLILaunchProfile(
+        commandName: "junie",
+        preferredBasenames: ["junie"],
+        supplementalSearchPaths: nativeDefaultsSupplemented(with: junieProviderSpecificPaths)
+    )
+
+    static let pi = CLILaunchProfile(
+        commandName: "pi-acp",
+        preferredBasenames: ["pi-acp"],
+        supplementalSearchPaths: nativeDefaultsSupplemented(with: piProviderSpecificPaths)
     )
 
     static func nativeDefaultsSupplemented(with providerSpecificPaths: [String]) -> [String] {

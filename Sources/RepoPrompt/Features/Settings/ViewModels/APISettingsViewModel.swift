@@ -299,6 +299,21 @@ public class APISettingsViewModel: ObservableObject {
     @Published var cursorError: String? = nil
     @Published private(set) var availableCursorModelOptions: [AgentModelOption] = []
     private var cursorLogCollector: CLIProcessLogCollector?
+    // Droid Agent CLI / ACP
+    @Published var isDroidConnected: Bool = UserDefaults.standard.bool(forKey: "DroidCLIConnected")
+    @Published var droidError: String? = nil
+    @Published private(set) var availableDroidModelOptions: [AgentModelOption] = []
+    private var droidLogCollector: CLIProcessLogCollector?
+    // Junie Agent CLI / ACP
+    @Published var isJunieConnected: Bool = UserDefaults.standard.bool(forKey: "JunieCLIConnected")
+    @Published var junieError: String? = nil
+    @Published private(set) var availableJunieModelOptions: [AgentModelOption] = []
+    private var junieLogCollector: CLIProcessLogCollector?
+    // Pi Agent CLI / ACP
+    @Published var isPiConnected: Bool = UserDefaults.standard.bool(forKey: "PiCLIConnected")
+    @Published var piError: String? = nil
+    @Published private(set) var availablePiModelOptions: [AgentModelOption] = []
+    private var piLogCollector: CLIProcessLogCollector?
 
     /// CLI connection flags are persisted configuration hints, not proof that the provider is
     /// usable in the current process. Context Builder restoration waits for this validation pass
@@ -348,6 +363,9 @@ public class APISettingsViewModel: ObservableObject {
     private var codexModelsTask: Task<Void, Never>?
     private var openCodeModelsTask: Task<Void, Never>?
     private var cursorModelsTask: Task<Void, Never>?
+    private var droidModelsTask: Task<Void, Never>?
+    private var junieModelsTask: Task<Void, Never>?
+    private var piModelsTask: Task<Void, Never>?
     private var openRouterModelsTask: Task<Void, Never>?
     private var initialLoadTask: Task<Void, Never>?
     private var cliConnectionCancellables = Set<AnyCancellable>()
@@ -378,6 +396,9 @@ public class APISettingsViewModel: ObservableObject {
             codexAvailable: isCodexConnected,
             openCodeAvailable: isOpenCodeConnected,
             cursorAvailable: isCursorConnected,
+            droidAvailable: isDroidConnected,
+            junieAvailable: isJunieConnected,
+            piAvailable: isPiConnected,
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -408,6 +429,9 @@ public class APISettingsViewModel: ObservableObject {
             $isCodexConnected.map { _ in () }.eraseToAnyPublisher(),
             $isOpenCodeConnected.map { _ in () }.eraseToAnyPublisher(),
             $isCursorConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isDroidConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isJunieConnected.map { _ in () }.eraseToAnyPublisher(),
+            $isPiConnected.map { _ in () }.eraseToAnyPublisher(),
             $claudeCodeCLIStatus.map { _ in () }.eraseToAnyPublisher(),
             $compatibleBackendConfigs.map { _ in () }.eraseToAnyPublisher(),
             $compatibleBackendSecretPresence.map { _ in () }.eraseToAnyPublisher()
@@ -428,6 +452,9 @@ public class APISettingsViewModel: ObservableObject {
             codexAvailable: isVerifiedContextBuilderProvider(.codexExec) && isCodexConnected,
             openCodeAvailable: isVerifiedContextBuilderProvider(.openCode) && isOpenCodeConnected,
             cursorAvailable: isVerifiedContextBuilderProvider(.cursor) && isCursorConnected,
+            droidAvailable: isVerifiedContextBuilderProvider(.droid) && isDroidConnected,
+            junieAvailable: isVerifiedContextBuilderProvider(.junie) && isJunieConnected,
+            piAvailable: isVerifiedContextBuilderProvider(.pi) && isPiConnected,
             zaiConfigured: compatibleBackendIsActive(.glmZAI),
             kimiConfigured: compatibleBackendIsActive(.kimi),
             customClaudeCompatibleConfigured: compatibleBackendIsActive(.custom)
@@ -439,6 +466,9 @@ public class APISettingsViewModel: ObservableObject {
             claudeCodeCLI: recommendationAvailability(isConnected: isClaudeCodeConnected, provider: .claudeCode),
             codexCLI: recommendationAvailability(isConnected: isCodexConnected, provider: .codexExec),
             cursorCLI: recommendationAvailability(isConnected: isCursorConnected, provider: .cursor),
+            droidCLI: recommendationAvailability(isConnected: isDroidConnected, provider: .droid),
+            junieCLI: recommendationAvailability(isConnected: isJunieConnected, provider: .junie),
+            piCLI: recommendationAvailability(isConnected: isPiConnected, provider: .pi),
             openAI: isOpenAIKeyValid ? .ready : (!openAIApiKey.isEmpty ? .configured : .notConfigured)
         )
     }
@@ -480,6 +510,12 @@ public class APISettingsViewModel: ObservableObject {
             isOpenCodeConnected
         case .cursor:
             isCursorConnected
+        case .droid:
+            isDroidConnected
+        case .junie:
+            isJunieConnected
+        case .pi:
+            isPiConnected
         case .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
             false
         }
@@ -526,7 +562,10 @@ public class APISettingsViewModel: ObservableObject {
             NotificationCenter.default.publisher(for: .claudeCodeConnectionChanged).map { _ in AgentProviderKind.claudeCode },
             NotificationCenter.default.publisher(for: .codexConnectionChanged).map { _ in AgentProviderKind.codexExec },
             NotificationCenter.default.publisher(for: .openCodeConnectionChanged).map { _ in AgentProviderKind.openCode },
-            NotificationCenter.default.publisher(for: .cursorConnectionChanged).map { _ in AgentProviderKind.cursor }
+            NotificationCenter.default.publisher(for: .cursorConnectionChanged).map { _ in AgentProviderKind.cursor },
+            NotificationCenter.default.publisher(for: .droidConnectionChanged).map { _ in AgentProviderKind.droid },
+            NotificationCenter.default.publisher(for: .junieConnectionChanged).map { _ in AgentProviderKind.junie },
+            NotificationCenter.default.publisher(for: .piConnectionChanged).map { _ in AgentProviderKind.pi }
         ])
         .receive(on: DispatchQueue.main)
         .sink { [weak self] provider in
@@ -549,6 +588,9 @@ public class APISettingsViewModel: ObservableObject {
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
         isCursorConnected = UserDefaults.standard.bool(forKey: "CursorCLIConnected")
+        isDroidConnected = UserDefaults.standard.bool(forKey: "DroidCLIConnected")
+        isJunieConnected = UserDefaults.standard.bool(forKey: "JunieCLIConnected")
+        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
         guard wasCursorConnected != isCursorConnected else { return }
         if isCursorConnected {
             startCursorModelsSubscriptionIfNeeded(workspacePath: nil)
@@ -1006,6 +1048,12 @@ public class APISettingsViewModel: ObservableObject {
         openCodeModelsTask = nil
         cursorModelsTask?.cancel()
         cursorModelsTask = nil
+        droidModelsTask?.cancel()
+        droidModelsTask = nil
+        junieModelsTask?.cancel()
+        junieModelsTask = nil
+        piModelsTask?.cancel()
+        piModelsTask = nil
         openRouterModelsTask?.cancel()
         openRouterModelsTask = nil
         contextBuilderProviderValidationTask?.cancel()
@@ -1025,6 +1073,9 @@ public class APISettingsViewModel: ObservableObject {
         codexModelsTask?.cancel()
         openCodeModelsTask?.cancel()
         cursorModelsTask?.cancel()
+        droidModelsTask?.cancel()
+        junieModelsTask?.cancel()
+        piModelsTask?.cancel()
         openRouterModelsTask?.cancel()
         contextBuilderProviderValidationTask?.cancel()
     }
@@ -1053,6 +1104,9 @@ public class APISettingsViewModel: ObservableObject {
         }
         isCodexConnected = UserDefaults.standard.bool(forKey: "CodexCLIConnected")
         isOpenCodeConnected = UserDefaults.standard.bool(forKey: "OpenCodeCLIConnected")
+        isDroidConnected = UserDefaults.standard.bool(forKey: "DroidCLIConnected")
+        isJunieConnected = UserDefaults.standard.bool(forKey: "JunieCLIConnected")
+        isPiConnected = UserDefaults.standard.bool(forKey: "PiCLIConnected")
 
         if let customConfig = try? CustomProviderConfiguration.load() {
             if let version = customConfig.apiVersion, !version.isEmpty {
@@ -1146,6 +1200,9 @@ public class APISettingsViewModel: ObservableObject {
         let shouldValidateCodex = isCodexConnected
         let shouldValidateOpenCode = isOpenCodeConnected
         let shouldValidateCursor = isCursorConnected
+        let shouldValidateDroid = isDroidConnected
+        let shouldValidateJunie = isJunieConnected
+        let shouldValidatePi = isPiConnected
 
         let task = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled, !hasPreparedForWindowClose else { return }
@@ -1157,13 +1214,19 @@ public class APISettingsViewModel: ObservableObject {
             async let codexReady = probeCachedCodexConnection(ifNeeded: shouldValidateCodex)
             async let openCodeReady = probeCachedOpenCodeConnection(ifNeeded: shouldValidateOpenCode)
             async let cursorReady = probeCachedCursorConnection(ifNeeded: shouldValidateCursor)
-            let readiness = await (claudeReady, codexReady, openCodeReady, cursorReady)
+            async let droidReady = probeCachedDroidConnection(ifNeeded: shouldValidateDroid)
+            async let junieReady = probeCachedJunieConnection(ifNeeded: shouldValidateJunie)
+            async let piReady = probeCachedPiConnection(ifNeeded: shouldValidatePi)
+            let readiness = await (claudeReady, codexReady, openCodeReady, cursorReady, droidReady, junieReady, piReady)
             guard !Task.isCancelled, !hasPreparedForWindowClose else { return }
 
             applyContextBuilderProviderValidationResult(readiness.0, provider: .claudeCode)
             applyContextBuilderProviderValidationResult(readiness.1, provider: .codexExec)
             applyContextBuilderProviderValidationResult(readiness.2, provider: .openCode)
             applyContextBuilderProviderValidationResult(readiness.3, provider: .cursor)
+            applyContextBuilderProviderValidationResult(readiness.4, provider: .droid)
+            applyContextBuilderProviderValidationResult(readiness.5, provider: .junie)
+            applyContextBuilderProviderValidationResult(readiness.6, provider: .pi)
             if isCodexConnected, isVerifiedContextBuilderProvider(.codexExec) {
                 startCodexModelsSubscriptionIfNeeded()
             }
@@ -1250,6 +1313,27 @@ public class APISettingsViewModel: ObservableObject {
             return true
         }
         return await CursorACPModelPollingService.shared.refreshNow(workspacePath: nil)
+    }
+
+    private func probeCachedDroidConnection(ifNeeded: Bool) async -> Bool {
+        guard ifNeeded else { return false }
+        // Droid does not have a model polling service yet; treat the persisted connection
+        // flag as sufficient for Context Builder restoration validation.
+        return true
+    }
+
+    private func probeCachedJunieConnection(ifNeeded: Bool) async -> Bool {
+        guard ifNeeded else { return false }
+        // Junie does not have a model polling service yet; treat the persisted connection
+        // flag as sufficient for Context Builder restoration validation.
+        return true
+    }
+
+    private func probeCachedPiConnection(ifNeeded: Bool) async -> Bool {
+        guard ifNeeded else { return false }
+        // Pi does not have a model polling service yet; treat the persisted connection
+        // flag as sufficient for Context Builder restoration validation.
+        return true
     }
 
     private func diagnosticReason(for error: Error) -> APIKeychainAccessDiagnostic.Reason {
@@ -1786,6 +1870,18 @@ public class APISettingsViewModel: ObservableObject {
             modelSet.formUnion(AIModel.modelsForProvider(.cursor))
         }
 
+        if isDroidConnected {
+            modelSet.formUnion(AIModel.modelsForProvider(.droid))
+        }
+
+        if isJunieConnected {
+            modelSet.formUnion(AIModel.modelsForProvider(.junie))
+        }
+
+        if isPiConnected {
+            modelSet.formUnion(AIModel.modelsForProvider(.pi))
+        }
+
         // ── Custom provider (OpenAI compatible) ────────────────────────────────
         if isCustomProviderValid,
            let config = try? CustomProviderConfiguration.load()
@@ -1854,6 +1950,9 @@ public class APISettingsViewModel: ObservableObject {
         case .claudeCode: "claude_code"
         case .codex: "codex"
         case .openCode: "opencode"
+        case .droid: "droid"
+        case .junie: "junie"
+        case .pi: "pi"
         }
     }
 
@@ -1928,6 +2027,12 @@ public class APISettingsViewModel: ObservableObject {
                 break
             case .cursor:
                 break
+            case .droid:
+                break
+            case .junie:
+                break
+            case .pi:
+                break
             }
 
             await updateAvailableModels()
@@ -1987,6 +2092,12 @@ public class APISettingsViewModel: ObservableObject {
         case .openCode:
             break
         case .cursor:
+            break
+        case .droid:
+            break
+        case .junie:
+            break
+        case .pi:
             break
         }
         await updateAvailableModels()
@@ -3446,6 +3557,465 @@ public class APISettingsViewModel: ObservableObject {
         cursorModelsTask = nil
         if clearModels {
             availableCursorModelOptions = []
+        }
+    }
+
+    // MARK: - Droid CLI / ACP
+
+    func testDroidConnection() async throws -> Bool {
+        let collector = CLIProcessLogCollector()
+        collector.append("Droid Agent CLI connection test started")
+        collector.append("Preferred Droid model fallback: \(AgentModel.defaultModel.rawValue)")
+        droidLogCollector = collector
+
+        collector.append("Refreshing login-shell environment cache")
+        await CLIEnvironmentCache.shared.invalidate()
+        collector.append("Starting Droid ACP connection validation")
+
+        do {
+            // Droid model polling service is deferred; run a real ACP launch/support
+            // preflight before reporting the provider connected, then fall back to
+            // static model options for the picker.
+            let provider = DroidACPAgentProvider(
+                config: DroidAgentConfig(
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .headless
+                )
+            )
+            let support = try await provider.support(
+                for: ACPRunRequest(
+                    agentKind: .droid,
+                    modelString: nil,
+                    workspacePath: nil,
+                    resumeSessionID: nil,
+                    attachments: [],
+                    taskLabelKind: nil
+                )
+            )
+            guard support == .supported else {
+                throw AIProviderError.invalidConfiguration(
+                    detail: support.reason ?? "Droid ACP preflight failed."
+                )
+            }
+            collector.append("Droid ACP preflight succeeded")
+
+            let droidOptions = AgentModelCatalog.options(
+                for: .droid,
+                availability: AgentModelCatalog.AvailabilityContext(droidAvailable: true)
+            )
+            collector.append("Using \(droidOptions.count) static Droid model option(s)")
+            availableDroidModelOptions = droidOptions
+
+            isDroidConnected = true
+            setContextBuilderProviderVerified(.droid, verified: true)
+            droidError = nil
+            UserDefaults.standard.set(true, forKey: "DroidCLIConnected")
+            await updateAvailableModels()
+            collector.append("Droid Agent CLI marked as connected")
+            droidLogCollector = nil
+            NotificationCenter.default.post(
+                name: .droidConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            return true
+        } catch {
+            collector.append("Connection test threw error: \(error.localizedDescription)")
+            isDroidConnected = false
+            setContextBuilderProviderVerified(.droid, verified: false)
+            droidError = friendlyDroidMessage(for: error)
+            UserDefaults.standard.set(false, forKey: "DroidCLIConnected")
+            stopDroidModelsSubscription(clearModels: true)
+            await updateAvailableModels()
+            let finalMessage = droidError ?? error.localizedDescription
+            collector.append("User guidance: \(finalMessage)")
+            NotificationCenter.default.post(
+                name: .droidConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            throw error
+        }
+    }
+
+    func disconnectDroid() {
+        isDroidConnected = false
+        setContextBuilderProviderVerified(.droid, verified: false)
+        droidError = nil
+        UserDefaults.standard.set(false, forKey: "DroidCLIConnected")
+        stopDroidModelsSubscription(clearModels: true)
+        Task {
+            await updateAvailableModels()
+            resetPreferredModelIfNeeded(for: .droid)
+        }
+        NotificationCenter.default.post(
+            name: .droidConnectionChanged,
+            object: nil,
+            userInfo: ["windowID": 0]
+        )
+    }
+
+    private func friendlyDroidMessage(for error: Error) -> String {
+        if let providerError = error as? AIProviderError {
+            switch providerError {
+            case let .invalidConfiguration(detail):
+                return detail
+            case let .apiError(source):
+                return source?.localizedDescription ?? "Unknown Droid Agent CLI error"
+            default:
+                return error.localizedDescription
+            }
+        }
+        let message = error.localizedDescription
+        let lowered = message.lowercased()
+        if lowered.contains("not installed") || lowered.contains("no such file") || lowered.contains("command not found") || lowered.contains("not found") {
+            return "Droid Agent CLI ACP server was not found. Install Droid Agent CLI and ensure `droid exec` is available."
+        }
+        if lowered.contains("permission denied") {
+            return "Permission denied. Ensure the `droid` executable is accessible."
+        }
+        if lowered.contains("unauthorized") || lowered.contains("not authenticated") || lowered.contains("login") {
+            return "Droid Agent CLI is not authenticated. Set `FACTORY_API_KEY` or complete Droid login."
+        }
+        if lowered.contains("does not advertise acp") || lowered.contains("acp support") {
+            return "Installed Droid Agent CLI does not support ACP mode. Update Droid Agent CLI and ensure `droid exec --help` works."
+        }
+        return message
+    }
+
+    func hasDroidTrace() -> Bool {
+        droidLogCollector?.isEmpty == false
+    }
+
+    func dumpDroidTrace() throws -> URL {
+        guard let collector = droidLogCollector else {
+            throw CLIProcessLogCollectorError.noEntries
+        }
+        collector.append("Exporting trace to Downloads folder")
+        let exportDate = Date()
+        let url = try collector.writeMarkdownToDownloads(
+            baseFilename: "RepoPrompt-DroidTrace",
+            title: "Droid Agent CLI Connection Trace",
+            timestamp: exportDate
+        )
+        collector.append("Trace exported to \(url.lastPathComponent)")
+        return url
+    }
+
+    private func startDroidModelsSubscriptionIfNeeded(workspacePath: String?) {
+        // Droid model polling service is deferred; no subscription needed for now
+    }
+
+    private func stopDroidModelsSubscription(clearModels: Bool = false) {
+        droidModelsTask?.cancel()
+        droidModelsTask = nil
+        if clearModels {
+            availableDroidModelOptions = []
+        }
+    }
+
+    // MARK: - Junie CLI / ACP
+
+    func testJunieConnection() async throws -> Bool {
+        let collector = CLIProcessLogCollector()
+        collector.append("Junie Agent CLI connection test started")
+        collector.append("Preferred Junie model fallback: \(AgentModel.defaultModel.rawValue)")
+        junieLogCollector = collector
+
+        collector.append("Refreshing login-shell environment cache")
+        await CLIEnvironmentCache.shared.invalidate()
+        collector.append("Starting Junie ACP connection validation")
+
+        do {
+            // Junie model polling service is deferred; run a real ACP launch/support
+            // preflight before reporting the provider connected, then fall back to
+            // static model options for the picker.
+            let provider = JunieACPAgentProvider(
+                config: JunieAgentConfig(
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .headless
+                )
+            )
+            let support = try await provider.support(
+                for: ACPRunRequest(
+                    agentKind: .junie,
+                    modelString: nil,
+                    workspacePath: nil,
+                    resumeSessionID: nil,
+                    attachments: [],
+                    taskLabelKind: nil
+                )
+            )
+            guard support == .supported else {
+                throw AIProviderError.invalidConfiguration(
+                    detail: support.reason ?? "Junie ACP preflight failed."
+                )
+            }
+            collector.append("Junie ACP preflight succeeded")
+
+            let junieOptions = AgentModelCatalog.options(
+                for: .junie,
+                availability: AgentModelCatalog.AvailabilityContext(junieAvailable: true)
+            )
+            collector.append("Using \(junieOptions.count) static Junie model option(s)")
+            availableJunieModelOptions = junieOptions
+
+            isJunieConnected = true
+            setContextBuilderProviderVerified(.junie, verified: true)
+            junieError = nil
+            UserDefaults.standard.set(true, forKey: "JunieCLIConnected")
+            await updateAvailableModels()
+            collector.append("Junie Agent CLI marked as connected")
+            junieLogCollector = nil
+            NotificationCenter.default.post(
+                name: .junieConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            return true
+        } catch {
+            collector.append("Connection test threw error: \(error.localizedDescription)")
+            isJunieConnected = false
+            setContextBuilderProviderVerified(.junie, verified: false)
+            junieError = friendlyJunieMessage(for: error)
+            UserDefaults.standard.set(false, forKey: "JunieCLIConnected")
+            stopJunieModelsSubscription(clearModels: true)
+            await updateAvailableModels()
+            let finalMessage = junieError ?? error.localizedDescription
+            collector.append("User guidance: \(finalMessage)")
+            NotificationCenter.default.post(
+                name: .junieConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            throw error
+        }
+    }
+
+    func disconnectJunie() {
+        isJunieConnected = false
+        setContextBuilderProviderVerified(.junie, verified: false)
+        junieError = nil
+        UserDefaults.standard.set(false, forKey: "JunieCLIConnected")
+        stopJunieModelsSubscription(clearModels: true)
+        Task {
+            await updateAvailableModels()
+            resetPreferredModelIfNeeded(for: .junie)
+        }
+        NotificationCenter.default.post(
+            name: .junieConnectionChanged,
+            object: nil,
+            userInfo: ["windowID": 0]
+        )
+    }
+
+    private func friendlyJunieMessage(for error: Error) -> String {
+        if let providerError = error as? AIProviderError {
+            switch providerError {
+            case let .invalidConfiguration(detail):
+                return detail
+            case let .apiError(source):
+                return source?.localizedDescription ?? "Unknown Junie Agent CLI error"
+            default:
+                return error.localizedDescription
+            }
+        }
+        let message = error.localizedDescription
+        let lowered = message.lowercased()
+        if lowered.contains("not installed") || lowered.contains("no such file") || lowered.contains("command not found") || lowered.contains("not found") {
+            return "Junie Agent CLI ACP server was not found. Install Junie and ensure `junie` is available."
+        }
+        if lowered.contains("permission denied") {
+            return "Permission denied. Ensure the `junie` executable is accessible."
+        }
+        if lowered.contains("unauthorized") || lowered.contains("not authenticated") || lowered.contains("login") {
+            return "Junie Agent CLI is not authenticated. Set `JUNIE_API_KEY` or run `junie --auth`."
+        }
+        if lowered.contains("does not advertise acp") || lowered.contains("acp support") {
+            return "Installed Junie CLI does not support ACP mode. Update Junie and ensure `junie --acp true` works."
+        }
+        return message
+    }
+
+    func hasJunieTrace() -> Bool {
+        junieLogCollector?.isEmpty == false
+    }
+
+    func dumpJunieTrace() throws -> URL {
+        guard let collector = junieLogCollector else {
+            throw CLIProcessLogCollectorError.noEntries
+        }
+        collector.append("Exporting trace to Downloads folder")
+        let exportDate = Date()
+        let url = try collector.writeMarkdownToDownloads(
+            baseFilename: "RepoPrompt-JunieTrace",
+            title: "Junie Agent CLI Connection Trace",
+            timestamp: exportDate
+        )
+        collector.append("Trace exported to \(url.lastPathComponent)")
+        return url
+    }
+
+    private func startJunieModelsSubscriptionIfNeeded(workspacePath: String?) {
+        // Junie model polling service is deferred; no subscription needed for now
+    }
+
+    private func stopJunieModelsSubscription(clearModels: Bool = false) {
+        junieModelsTask?.cancel()
+        junieModelsTask = nil
+        if clearModels {
+            availableJunieModelOptions = []
+        }
+    }
+
+    // MARK: - Pi CLI / ACP
+
+    func testPiConnection() async throws -> Bool {
+        let collector = CLIProcessLogCollector()
+        collector.append("Pi Agent CLI connection test started")
+        collector.append("Preferred Pi model fallback: \(AgentModel.defaultModel.rawValue)")
+        piLogCollector = collector
+
+        collector.append("Refreshing login-shell environment cache")
+        await CLIEnvironmentCache.shared.invalidate()
+        collector.append("Starting Pi ACP connection validation")
+
+        do {
+            // Pi model polling service is deferred; run a real ACP launch/support
+            // preflight before reporting the provider connected, then fall back to
+            // static model options for the picker.
+            let provider = PiACPAgentProvider(
+                config: PiAgentConfig(
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .headless
+                )
+            )
+            let support = try await provider.support(
+                for: ACPRunRequest(
+                    agentKind: .pi,
+                    modelString: nil,
+                    workspacePath: nil,
+                    resumeSessionID: nil,
+                    attachments: [],
+                    taskLabelKind: nil
+                )
+            )
+            guard support == .supported else {
+                throw AIProviderError.invalidConfiguration(
+                    detail: support.reason ?? "Pi ACP preflight failed."
+                )
+            }
+            collector.append("Pi ACP preflight succeeded")
+
+            let piOptions = AgentModelCatalog.options(
+                for: .pi,
+                availability: AgentModelCatalog.AvailabilityContext(piAvailable: true)
+            )
+            collector.append("Using \(piOptions.count) static Pi model option(s)")
+            availablePiModelOptions = piOptions
+
+            isPiConnected = true
+            setContextBuilderProviderVerified(.pi, verified: true)
+            piError = nil
+            UserDefaults.standard.set(true, forKey: "PiCLIConnected")
+            await updateAvailableModels()
+            collector.append("Pi Agent CLI marked as connected")
+            piLogCollector = nil
+            NotificationCenter.default.post(
+                name: .piConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            return true
+        } catch {
+            collector.append("Connection test threw error: \(error.localizedDescription)")
+            isPiConnected = false
+            setContextBuilderProviderVerified(.pi, verified: false)
+            piError = friendlyPiMessage(for: error)
+            UserDefaults.standard.set(false, forKey: "PiCLIConnected")
+            stopPiModelsSubscription(clearModels: true)
+            await updateAvailableModels()
+            let finalMessage = piError ?? error.localizedDescription
+            collector.append("User guidance: \(finalMessage)")
+            NotificationCenter.default.post(
+                name: .piConnectionChanged,
+                object: nil,
+                userInfo: ["windowID": 0]
+            )
+            throw error
+        }
+    }
+
+    func disconnectPi() {
+        isPiConnected = false
+        setContextBuilderProviderVerified(.pi, verified: false)
+        piError = nil
+        UserDefaults.standard.set(false, forKey: "PiCLIConnected")
+        stopPiModelsSubscription(clearModels: true)
+        Task {
+            await updateAvailableModels()
+            resetPreferredModelIfNeeded(for: .pi)
+        }
+        NotificationCenter.default.post(
+            name: .piConnectionChanged,
+            object: nil,
+            userInfo: ["windowID": 0]
+        )
+    }
+
+    private func friendlyPiMessage(for error: Error) -> String {
+        if let providerError = error as? AIProviderError {
+            switch providerError {
+            case let .invalidConfiguration(detail):
+                return detail
+            case let .apiError(source):
+                return source?.localizedDescription ?? "Unknown Pi Agent CLI error"
+            default:
+                return error.localizedDescription
+            }
+        }
+        let message = error.localizedDescription
+        let lowered = message.lowercased()
+        if lowered.contains("not installed") || lowered.contains("no such file") || lowered.contains("command not found") || lowered.contains("not found") {
+            return "Pi ACP adapter was not found. Install it with `npm install -g pi-acp` and ensure `pi-acp` is available."
+        }
+        if lowered.contains("permission denied") {
+            return "Permission denied. Ensure the `pi-acp` executable is accessible."
+        }
+        if lowered.contains("unauthorized") || lowered.contains("not authenticated") || lowered.contains("login") {
+            return "Pi is not authenticated. Configure pi's model providers or run `pi-acp --terminal-login`."
+        }
+        return message
+    }
+
+    func hasPiTrace() -> Bool {
+        piLogCollector?.isEmpty == false
+    }
+
+    func dumpPiTrace() throws -> URL {
+        guard let collector = piLogCollector else {
+            throw CLIProcessLogCollectorError.noEntries
+        }
+        collector.append("Exporting trace to Downloads folder")
+        let exportDate = Date()
+        let url = try collector.writeMarkdownToDownloads(
+            baseFilename: "RepoPrompt-PiTrace",
+            title: "Pi Agent CLI Connection Trace",
+            timestamp: exportDate
+        )
+        collector.append("Trace exported to \(url.lastPathComponent)")
+        return url
+    }
+
+    private func startPiModelsSubscriptionIfNeeded(workspacePath: String?) {
+        // Pi model polling service is deferred; no subscription needed for now
+    }
+
+    private func stopPiModelsSubscription(clearModels: Bool = false) {
+        piModelsTask?.cancel()
+        piModelsTask = nil
+        if clearModels {
+            availablePiModelOptions = []
         }
     }
 

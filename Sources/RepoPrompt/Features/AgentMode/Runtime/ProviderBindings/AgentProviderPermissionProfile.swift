@@ -150,8 +150,47 @@ extension AgentProviderPermissionProfile {
             openCodeSessionModeID
         case .cursor:
             nil
+        case .droid:
+            nil
+        case .junie:
+            nil
+        case .pi:
+            nil
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .codexExec:
             nil
+        }
+    }
+
+    func droidPermissionLevel(
+        userConfigured: DroidAgentToolPreferences.PermissionLevel = DroidAgentToolPreferences.permissionLevel()
+    ) -> DroidAgentToolPreferences.PermissionLevel {
+        switch self {
+        case .userConfigured: userConfigured
+        case .mcpSafeDefaults: .managedDefault
+        case let .providerOverride(.droid(level)): level
+        case .providerOverride: .managedDefault
+        }
+    }
+
+    func juniePermissionLevel(
+        userConfigured: JunieAgentToolPreferences.PermissionLevel = JunieAgentToolPreferences.permissionLevel()
+    ) -> JunieAgentToolPreferences.PermissionLevel {
+        switch self {
+        case .userConfigured: userConfigured
+        case .mcpSafeDefaults: .managedDefault
+        case let .providerOverride(.junie(level)): level
+        case .providerOverride: .managedDefault
+        }
+    }
+
+    func piPermissionLevel(
+        userConfigured: PiAgentToolPreferences.PermissionLevel = PiAgentToolPreferences.permissionLevel()
+    ) -> PiAgentToolPreferences.PermissionLevel {
+        switch self {
+        case .userConfigured: userConfigured
+        case .mcpSafeDefaults: .managedDefault
+        case let .providerOverride(.pi(level)): level
+        case .providerOverride: .managedDefault
         }
     }
 }

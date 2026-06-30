@@ -22,6 +22,9 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "CodexCLIAPI",
                 "OpenCodeCLIAPI",
                 "CursorCLIAPI",
+                "DroidCLIAPI",
+                "JunieCLIAPI",
+                "PiCLIAPI",
                 "ZAIAPI",
                 "ClaudeCompatibleBackend.kimi.apiKey",
                 "ClaudeCompatibleBackend.custom.apiKey",
@@ -29,10 +32,13 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "rp.agent.permissions.codex.v1",
                 "rp.agent.permissions.claude.v1",
                 "rp.agent.permissions.openCode.v1",
-                "rp.agent.permissions.cursor.v1"
+                "rp.agent.permissions.cursor.v1",
+                "rp.agent.permissions.droid.v1",
+                "rp.agent.permissions.junie.v1",
+                "rp.agent.permissions.pi.v1"
             ]
         )
-        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 23)
+        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 29)
     }
 
     func testProviderMappingsUseCatalogAccounts() {
@@ -52,6 +58,9 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
             (.codex, .codexCLIAPI),
             (.openCode, .openCodeCLIAPI),
             (.cursor, .cursorCLIAPI),
+            (.droid, .droidCLIAPI),
+            (.junie, .junieCLIAPI),
+            (.pi, .piCLIAPI),
             (.zAI, .zAIAPI)
         ]
 

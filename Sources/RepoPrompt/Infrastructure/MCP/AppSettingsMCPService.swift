@@ -1341,6 +1341,12 @@ private enum AppSettingsMCPRegistry {
             .openCode
         case .cursor:
             .cursor
+        case .droid:
+            .droid
+        case .junie:
+            .junie
+        case .pi:
+            .pi
         }
     }
 
@@ -1362,6 +1368,9 @@ private enum AppSettingsMCPRegistry {
         case .codex: "codex"
         case .openCode: "openCode"
         case .cursor: "cursor"
+        case .droid: "droid"
+        case .junie: "junie"
+        case .pi: "pi"
         }
     }
 

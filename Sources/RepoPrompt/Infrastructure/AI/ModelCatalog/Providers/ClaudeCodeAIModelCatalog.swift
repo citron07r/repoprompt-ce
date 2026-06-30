@@ -477,6 +477,9 @@ enum ClaudeCodeAIModelCatalog {
             codexAvailable: false,
             openCodeAvailable: false,
             cursorAvailable: false,
+            droidAvailable: false,
+            junieAvailable: false,
+            piAvailable: false,
             zaiConfigured: false
         )
     }

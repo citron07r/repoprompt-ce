@@ -69,6 +69,36 @@ enum AgentModeMCPToolPolicy {
 
     static let cursorGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: cursorGrantedCapabilities)
 
+    /// Droid ACP uses the same Agent Mode app/session control surface as Cursor/OpenCode.
+    static let droidGrantedCapabilities: Set<MCPToolCapability> = [
+        .userInteraction,
+        .agentSessionControl,
+        .agentConversationSend,
+        .conversationLog
+    ]
+
+    static let droidGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: droidGrantedCapabilities)
+
+    /// Junie ACP uses the same Agent Mode app/session control surface as Cursor/OpenCode.
+    static let junieGrantedCapabilities: Set<MCPToolCapability> = [
+        .userInteraction,
+        .agentSessionControl,
+        .agentConversationSend,
+        .conversationLog
+    ]
+
+    static let junieGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: junieGrantedCapabilities)
+
+    /// Pi ACP uses the same Agent Mode app/session control surface as Cursor/OpenCode.
+    static let piGrantedCapabilities: Set<MCPToolCapability> = [
+        .userInteraction,
+        .agentSessionControl,
+        .agentConversationSend,
+        .conversationLog
+    ]
+
+    static let piGrantedTools: Set<String> = MCPToolCapabilities.toolNames(for: piGrantedCapabilities)
+
     static func grantedTools(forAgent agent: AgentProviderKind) -> Set<String> {
         switch agent {
         case .codexExec:
@@ -79,6 +109,12 @@ enum AgentModeMCPToolPolicy {
             openCodeGrantedTools
         case .cursor:
             cursorGrantedTools
+        case .droid:
+            droidGrantedTools
+        case .junie:
+            junieGrantedTools
+        case .pi:
+            piGrantedTools
         }
     }
 }

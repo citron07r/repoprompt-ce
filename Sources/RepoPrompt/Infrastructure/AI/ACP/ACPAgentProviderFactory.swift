@@ -21,6 +21,30 @@ enum ACPAgentProviderFactory {
                     modelString: modelString
                 )
             )
+        case .droid:
+            DroidACPAgentProvider(
+                config: DroidAgentConfig(
+                    modelString: modelString,
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .agentMode
+                )
+            )
+        case .junie:
+            JunieACPAgentProvider(
+                config: JunieAgentConfig(
+                    modelString: modelString,
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .agentMode
+                )
+            )
+        case .pi:
+            PiACPAgentProvider(
+                config: PiAgentConfig(
+                    modelString: modelString,
+                    enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                    toolProfile: .agentMode
+                )
+            )
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible, .codexExec:
             nil
         }

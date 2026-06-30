@@ -51,6 +51,9 @@ final class AutoRecommendationEngine {
                 claudeCodeCLI: .notConfigured,
                 codexCLI: .notConfigured,
                 cursorCLI: .notConfigured,
+                droidCLI: .notConfigured,
+                junieCLI: .notConfigured,
+                piCLI: .notConfigured,
                 openAI: .notConfigured
             )
         }
@@ -354,6 +357,9 @@ final class AutoRecommendationEngine {
             claudeCodeCLI: availability.claudeCodeAvailable ? .ready : .notConfigured,
             codexCLI: availability.codexAvailable ? .ready : .notConfigured,
             cursorCLI: availability.cursorAvailable ? .ready : .notConfigured,
+            droidCLI: availability.droidAvailable ? .ready : .notConfigured,
+            junieCLI: availability.junieAvailable ? .ready : .notConfigured,
+            piCLI: availability.piAvailable ? .ready : .notConfigured,
             openAI: .notConfigured
         ).filtered(to: enabledRecommendationProviders)
         if let recommendation = contextBuilderRecommendation(status: status) {
@@ -372,6 +378,12 @@ final class AutoRecommendationEngine {
                 enabledRecommendationProviders.contains(.codex)
             case .cursor:
                 enabledRecommendationProviders.contains(.cursor)
+            case .droid:
+                enabledRecommendationProviders.contains(.droid)
+            case .junie:
+                enabledRecommendationProviders.contains(.junie)
+            case .pi:
+                enabledRecommendationProviders.contains(.pi)
             case .openCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
                 true
             }
@@ -436,6 +448,9 @@ final class AutoRecommendationEngine {
             codexAvailable: status.codexCLI == .ready,
             openCodeAvailable: false,
             cursorAvailable: status.cursorCLI == .ready,
+            droidAvailable: status.droidCLI == .ready,
+            junieAvailable: status.junieCLI == .ready,
+            piAvailable: status.piCLI == .ready,
             zaiConfigured: backendStore.isConfigured(.glmZAI) && backendStore.config(for: .glmZAI).isEnabled && backendStore.config(for: .glmZAI).isValid,
             kimiConfigured: backendStore.isConfigured(.kimi) && backendStore.config(for: .kimi).isEnabled && backendStore.config(for: .kimi).isValid,
             customClaudeCompatibleConfigured: backendStore.isConfigured(.custom) && backendStore.config(for: .custom).isEnabled && backendStore.config(for: .custom).isValid

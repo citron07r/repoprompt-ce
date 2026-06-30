@@ -172,6 +172,54 @@ struct AgentPermissionCapabilitySummaryBuilder {
                 approvalModeDescription: level.autoApprovesACPToolPermissions ? "Auto-approve: on" : "Auto-approve: off",
                 warnings: warnings
             )
+        case .droid:
+            let level = droidPermissionLevel(profile: profile)
+            let warnings = level == .fullAccess
+                ? ["Droid session mode is Full Access — tool calls auto-accept."]
+                : []
+            return AgentPermissionCapabilitySummary(
+                providerID: providerID,
+                providerName: providerID.displayName,
+                isAvailable: isAvailable,
+                fileMutation: "ACP session mode: \(level.displayName)",
+                shell: "Handled by Droid CLI",
+                externalMCP: "Third-party MCP: not supported",
+                search: "Managed by Droid CLI",
+                approvalModeDescription: "Auto-accept: \(level.acceptsPendingApprovalWhenActivated ? "on" : "off")",
+                warnings: warnings
+            )
+        case .junie:
+            let level = juniePermissionLevel(profile: profile)
+            let warnings = level == .fullAccess
+                ? ["Junie session mode is Full Access — tool calls auto-accept."]
+                : []
+            return AgentPermissionCapabilitySummary(
+                providerID: providerID,
+                providerName: providerID.displayName,
+                isAvailable: isAvailable,
+                fileMutation: "ACP session mode: \(level.displayName)",
+                shell: "Handled by Junie CLI",
+                externalMCP: "Third-party MCP: not supported",
+                search: "Managed by Junie CLI",
+                approvalModeDescription: "Auto-accept: \(level.acceptsPendingApprovalWhenActivated ? "on" : "off")",
+                warnings: warnings
+            )
+        case .pi:
+            let level = piPermissionLevel(profile: profile)
+            let warnings = level == .fullAccess
+                ? ["Pi session mode is Full Access — tool calls auto-accept."]
+                : []
+            return AgentPermissionCapabilitySummary(
+                providerID: providerID,
+                providerName: providerID.displayName,
+                isAvailable: isAvailable,
+                fileMutation: "ACP session mode: \(level.displayName)",
+                shell: "Handled by Pi CLI",
+                externalMCP: "Third-party MCP: not supported",
+                search: "Managed by Pi CLI",
+                approvalModeDescription: "Auto-accept: \(level.acceptsPendingApprovalWhenActivated ? "on" : "off")",
+                warnings: warnings
+            )
         }
     }
 
@@ -193,6 +241,9 @@ struct AgentPermissionCapabilitySummaryBuilder {
         case .claude: availability.claudeCodeAvailable
         case .openCode: availability.openCodeAvailable
         case .cursor: availability.cursorAvailable
+        case .droid: availability.droidAvailable
+        case .junie: availability.junieAvailable
+        case .pi: availability.piAvailable
         }
     }
 
@@ -249,6 +300,45 @@ struct AgentPermissionCapabilitySummaryBuilder {
         case .mcpSafeDefaults:
             .managedDefault
         case let .providerOverride(.cursor(level)):
+            level
+        case .providerOverride:
+            .managedDefault
+        }
+    }
+
+    private func droidPermissionLevel(profile: AgentProviderPermissionProfile) -> DroidAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            DroidAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
+        case .mcpSafeDefaults:
+            .managedDefault
+        case let .providerOverride(.droid(level)):
+            level
+        case .providerOverride:
+            .managedDefault
+        }
+    }
+
+    private func juniePermissionLevel(profile: AgentProviderPermissionProfile) -> JunieAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            JunieAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
+        case .mcpSafeDefaults:
+            .managedDefault
+        case let .providerOverride(.junie(level)):
+            level
+        case .providerOverride:
+            .managedDefault
+        }
+    }
+
+    private func piPermissionLevel(profile: AgentProviderPermissionProfile) -> PiAgentToolPreferences.PermissionLevel {
+        switch profile {
+        case .userConfigured:
+            PiAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: securePermissions)
+        case .mcpSafeDefaults:
+            .managedDefault
+        case let .providerOverride(.pi(level)):
             level
         case .providerOverride:
             .managedDefault

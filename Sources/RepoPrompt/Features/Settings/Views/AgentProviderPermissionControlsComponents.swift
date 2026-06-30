@@ -89,6 +89,9 @@ struct AgentProviderPermissionLevelSection: View {
         case .codex, .claude: "Permission Level"
         case .openCode: "ACP Session Mode"
         case .cursor: "ACP Auto-Approve"
+        case .droid: "ACP Session Mode"
+        case .junie: "ACP Session Mode"
+        case .pi: "ACP Session Mode"
         }
     }
 }
@@ -149,7 +152,7 @@ struct AgentProviderToolsRuntimeDisclosure: View {
         switch providerID {
         case .codex: binding.codexTools != nil
         case .claude: binding.claudeTools != nil
-        case .openCode, .cursor: false
+        case .openCode, .cursor, .droid, .junie, .pi: false
         }
     }
 }
@@ -187,7 +190,7 @@ struct AgentProviderToolsRuntimeControls: View {
                         onSetToolSearchEnabled: onSetClaudeToolSearchEnabled
                     )
                 }
-            case .openCode, .cursor:
+            case .openCode, .cursor, .droid, .junie, .pi:
                 EmptyView()
             }
         }

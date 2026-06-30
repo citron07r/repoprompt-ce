@@ -38,4 +38,13 @@ extension Notification.Name {
     /// Posted when Cursor CLI connection status changes
     /// userInfo mirrors `claudeCodeConnectionChanged`
     static let cursorConnectionChanged = Notification.Name("cursorConnectionChanged")
+    /// Posted when Droid CLI connection status changes
+    /// userInfo mirrors `claudeCodeConnectionChanged`
+    static let droidConnectionChanged = Notification.Name("droidConnectionChanged")
+    /// Posted when Junie CLI connection status changes
+    /// userInfo mirrors `claudeCodeConnectionChanged`
+    static let junieConnectionChanged = Notification.Name("junieConnectionChanged")
+    /// Posted when Pi CLI connection status changes
+    /// userInfo mirrors `claudeCodeConnectionChanged`
+    static let piConnectionChanged = Notification.Name("piConnectionChanged")
 }
