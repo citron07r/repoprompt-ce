@@ -166,6 +166,9 @@ public enum AIModel: Equatable, Hashable {
     case codexCustom(name: String)
     case openCodeCustom(name: String)
     case cursorCustom(name: String)
+    case droidCustom(name: String)
+    case junieCustom(name: String)
+    case piCustom(name: String)
 
     // Custom Provider Models
     case customProvider(name: String, provider: String, model: String)
@@ -500,6 +503,12 @@ public enum AIModel: Equatable, Hashable {
             return "opencode_custom_\(n)"
         case let .cursorCustom(n):
             return "cursor_custom_\(n)"
+        case let .droidCustom(n):
+            return "droid_custom_\(n)"
+        case let .junieCustom(n):
+            return "junie_custom_\(n)"
+        case let .piCustom(n):
+            return "pi_custom_\(n)"
         case let .customProvider(_, _, model):
             return "custom_provider_\(model)"
         case let .customProviderUser(name):
@@ -567,6 +576,24 @@ public enum AIModel: Equatable, Hashable {
             }
             return n
         }
+        if case let .droidCustom(n) = self {
+            if let option = ACPAIModelCatalog.droidModelOption(for: n) {
+                return option.displayName
+            }
+            return n
+        }
+        if case let .junieCustom(n) = self {
+            if let option = ACPAIModelCatalog.junieModelOption(for: n) {
+                return option.displayName
+            }
+            return n
+        }
+        if case let .piCustom(n) = self {
+            if let option = ACPAIModelCatalog.piModelOption(for: n) {
+                return option.displayName
+            }
+            return n
+        }
         if case let .customProviderUser(name) = self { return "Custom/\(name)" }
         if case .ollama = self {
             return "local/" + modelName
@@ -595,6 +622,9 @@ public enum AIModel: Equatable, Hashable {
         case .codex: CodexCLIProvider.self
         case .openCode: OpenCodeCLIProvider.self
         case .cursor: CursorCLIProvider.self
+        case .droid: BlankProvider.self
+        case .junie: BlankProvider.self
+        case .pi: BlankProvider.self
         }
     }
 
@@ -623,6 +653,9 @@ public enum AIModel: Equatable, Hashable {
         case .codexCustom: return .codex
         case .openCodeCustom: return .openCode
         case .cursorCustom: return .cursor
+        case .droidCustom: return .droid
+        case .junieCustom: return .junie
+        case .piCustom: return .pi
         case .customProviderUser: return .customProvider
         // or, if you prefer the old modelGroups approach:
         default:
@@ -676,7 +709,10 @@ public enum AIModel: Equatable, Hashable {
              let .zaiCustom(n),
              let .codexCustom(n),
              let .openCodeCustom(n),
-             let .cursorCustom(n):
+             let .cursorCustom(n),
+             let .droidCustom(n),
+             let .junieCustom(n),
+             let .piCustom(n):
             return n
         case let .customProviderUser(name):
             return name
@@ -1111,7 +1147,7 @@ public enum AIModel: Equatable, Hashable {
             return SwiftOpenAI.Model.custom(modelName)
         case .anthropic:
             return SwiftAnthropic.Model.other(modelName)
-        case .azure, .openRouter, .customProvider, .claudeCode, .codex, .openCode, .cursor:
+        case .azure, .openRouter, .customProvider, .claudeCode, .codex, .openCode, .cursor, .droid, .junie, .pi:
             // For these providers, use the actual model name when available
             if let modelInfo = Self.modelDefinitions.first(where: { $0.model == self }),
                let actualName = modelInfo.actualName
@@ -1185,6 +1221,15 @@ public enum AIModel: Equatable, Hashable {
         }
         if normalizedRawValue.starts(with: "cursor_custom_") {
             return .cursorCustom(name: String(normalizedRawValue.dropFirst("cursor_custom_".count)))
+        }
+        if normalizedRawValue.starts(with: "droid_custom_") {
+            return .droidCustom(name: String(normalizedRawValue.dropFirst("droid_custom_".count)))
+        }
+        if normalizedRawValue.starts(with: "junie_custom_") {
+            return .junieCustom(name: String(normalizedRawValue.dropFirst("junie_custom_".count)))
+        }
+        if normalizedRawValue.starts(with: "pi_custom_") {
+            return .piCustom(name: String(normalizedRawValue.dropFirst("pi_custom_".count)))
         }
 
         if normalizedRawValue.starts(with: "openai_custom_reasoning_") {
@@ -1298,6 +1343,12 @@ public enum AIModel: Equatable, Hashable {
             models = ACPAIModelCatalog.openCodeModelsFromStore()
         case .cursor:
             models = ACPAIModelCatalog.cursorModelsFromStore()
+        case .droid:
+            models = ACPAIModelCatalog.droidModelsFromStore()
+        case .junie:
+            models = ACPAIModelCatalog.junieModelsFromStore()
+        case .pi:
+            models = ACPAIModelCatalog.piModelsFromStore()
         }
 
         // Filter out models that are not yet available based on their release date
@@ -1857,6 +1908,11 @@ public enum AIModel: Equatable, Hashable {
                 models.append(contentsOf: group)
             }
         }
+        // Droid/Junie/Pi have no static ProviderIndex slot; surface their dynamic ACP
+        // models (empty until model polling is implemented) alongside the others.
+        models.append(contentsOf: ACPAIModelCatalog.droidModelsFromStore())
+        models.append(contentsOf: ACPAIModelCatalog.junieModelsFromStore())
+        models.append(contentsOf: ACPAIModelCatalog.piModelsFromStore())
         models.append(.ollama)
         // Filter out models that are not yet available based on their release date
         return models.filter(\.isAvailable)
@@ -1879,6 +1935,9 @@ public enum AIModel: Equatable, Hashable {
         case codexCustom(name: String)
         case openCodeCustom(name: String)
         case cursorCustom(name: String)
+        case droidCustom(name: String)
+        case junieCustom(name: String)
+        case piCustom(name: String)
         case customProvider(name: String, provider: String, model: String)
         case customProviderUser(name: String)
         case claudeCodeModel(normalizedSpecifier: String)
@@ -2020,6 +2079,12 @@ public enum AIModel: Equatable, Hashable {
             .openCodeCustom(name: name)
         case let .cursorCustom(name):
             .cursorCustom(name: name)
+        case let .droidCustom(name):
+            .droidCustom(name: name)
+        case let .junieCustom(name):
+            .junieCustom(name: name)
+        case let .piCustom(name):
+            .piCustom(name: name)
         case let .customProvider(name, provider, model):
             .customProvider(name: name, provider: provider, model: model)
         case let .customProviderUser(name):
@@ -2330,7 +2395,7 @@ public enum AIModel: Equatable, Hashable {
         case .customProvider:
             // CustomProviderConfiguration uses 0.3 as default (line 10 in CustomProviderConfiguration.swift)
             return 0.3
-        case .openAI, .azure, .openRouter, .gemini, .deepseek, .fireworks, .grok, .groq, .zAI, .claudeCode, .codex, .ollama, .openCode, .cursor:
+        case .openAI, .azure, .openRouter, .gemini, .deepseek, .fireworks, .grok, .groq, .zAI, .claudeCode, .codex, .ollama, .openCode, .cursor, .droid, .junie, .pi:
             // These providers don't set temperature when nil - API uses its own default (typically 1.0)
             // But we can't be certain what the API actually used
             return nil

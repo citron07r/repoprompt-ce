@@ -291,6 +291,18 @@ enum ACPAIModelCatalog {
         cursorModelOptionsFromStore().map { .cursorCustom(name: $0.rawValue) }
     }
 
+    static func droidModelsFromStore() -> [AIModel] {
+        droidModelOptionsFromStore().map { .droidCustom(name: $0.rawValue) }
+    }
+
+    static func junieModelsFromStore() -> [AIModel] {
+        junieModelOptionsFromStore().map { .junieCustom(name: $0.rawValue) }
+    }
+
+    static func piModelsFromStore() -> [AIModel] {
+        piModelOptionsFromStore().map { .piCustom(name: $0.rawValue) }
+    }
+
     static func openCodeModelOption(for rawValue: String) -> AgentModelOption? {
         let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
@@ -301,12 +313,55 @@ enum ACPAIModelCatalog {
     static func cursorModelOption(for rawValue: String) -> AgentModelOption? {
         let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
-        if let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.options.first(where: {
+        return cursorModelOptionsFromStore()
+            .first { $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame }
+    }
+
+    static func droidModelOptionsFromStore() -> [AgentModelOption] {
+        AgentACPModelRegistry.shared.resolvedSnapshot(for: .droid)?.options ?? []
+    }
+
+    static func droidModelOption(for rawValue: String) -> AgentModelOption? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .droid)?.options.first(where: {
             $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame
         }) {
             return discovered
         }
-        return cursorModelOptionsFromStore()
+        return droidModelOptionsFromStore()
+            .first { $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame }
+    }
+
+    static func junieModelOptionsFromStore() -> [AgentModelOption] {
+        AgentACPModelRegistry.shared.resolvedSnapshot(for: .junie)?.options ?? []
+    }
+
+    static func junieModelOption(for rawValue: String) -> AgentModelOption? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .junie)?.options.first(where: {
+            $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame
+        }) {
+            return discovered
+        }
+        return junieModelOptionsFromStore()
+            .first { $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame }
+    }
+
+    static func piModelOptionsFromStore() -> [AgentModelOption] {
+        AgentACPModelRegistry.shared.resolvedSnapshot(for: .pi)?.options ?? []
+    }
+
+    static func piModelOption(for rawValue: String) -> AgentModelOption? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .pi)?.options.first(where: {
+            $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame
+        }) {
+            return discovered
+        }
+        return piModelOptionsFromStore()
             .first { $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame }
     }
 

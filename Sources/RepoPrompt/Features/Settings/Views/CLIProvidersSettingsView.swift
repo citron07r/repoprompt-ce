@@ -40,11 +40,17 @@ struct CLIProvidersSettingsView: View {
     @State private var isLoggingIntoCodex = false
     @State private var isLoadingOpenCode = false
     @State private var isLoadingCursor = false
+    @State private var isLoadingDroid = false
+    @State private var isLoadingJunie = false
+    @State private var isLoadingPi = false
     @State private var isLoadingZAI = false
     @State private var showClaudeCodeTraceDump = false
     @State private var showCodexTraceDump = false
     @State private var showOpenCodeTraceDump = false
     @State private var showCursorTraceDump = false
+    @State private var showDroidTraceDump = false
+    @State private var showJunieTraceDump = false
+    @State private var showPiTraceDump = false
     @State private var isClaudePromptSettingsExpanded = false
     @State private var claudeNativePromptMode = ClaudeAgentToolPreferences.agentModePromptDelivery()
 
@@ -57,6 +63,9 @@ struct CLIProvidersSettingsView: View {
     @State private var isCodexExpanded: Bool = false
     @State private var isOpenCodeExpanded: Bool = false
     @State private var isCursorExpanded: Bool = false
+    @State private var isDroidExpanded: Bool = false
+    @State private var isJunieExpanded: Bool = false
+    @State private var isPiExpanded: Bool = false
 
     // Per-backend secret text entry buffers (GLM uses viewModel.zaiApiKey directly).
     // SEARCH-HELPER: Claude-Compatible Backends settings, Kimi API key entry, Custom backend key entry
@@ -75,6 +84,9 @@ struct CLIProvidersSettingsView: View {
             || viewModel.isCodexConnected
             || viewModel.isOpenCodeConnected
             || viewModel.isCursorConnected
+            || viewModel.isDroidConnected
+            || viewModel.isJunieConnected
+            || viewModel.isPiConnected
     }
 
     private var codexStatusText: String? {
@@ -132,6 +144,9 @@ struct CLIProvidersSettingsView: View {
                 claudeCompatibleBackendsSection
                 openCodeCard
                 cursorCard
+                droidCard
+                junieCard
+                piCard
             }
             .padding(16)
         }
@@ -171,6 +186,27 @@ struct CLIProvidersSettingsView: View {
                     primaryButton: .default(Text("Save Trace to Downloads"), action: dumpCursorTrace),
                     secondaryButton: .cancel(Text("OK"), action: { showCursorTraceDump = false })
                 )
+            } else if showDroidTraceDump, viewModel.hasDroidTrace() {
+                Alert(
+                    title: Text("CLI Provider Management"),
+                    message: Text(alertMessage),
+                    primaryButton: .default(Text("Save Trace to Downloads"), action: dumpDroidTrace),
+                    secondaryButton: .cancel(Text("OK"), action: { showDroidTraceDump = false })
+                )
+            } else if showJunieTraceDump, viewModel.hasJunieTrace() {
+                Alert(
+                    title: Text("CLI Provider Management"),
+                    message: Text(alertMessage),
+                    primaryButton: .default(Text("Save Trace to Downloads"), action: dumpJunieTrace),
+                    secondaryButton: .cancel(Text("OK"), action: { showJunieTraceDump = false })
+                )
+            } else if showPiTraceDump, viewModel.hasPiTrace() {
+                Alert(
+                    title: Text("CLI Provider Management"),
+                    message: Text(alertMessage),
+                    primaryButton: .default(Text("Save Trace to Downloads"), action: dumpPiTrace),
+                    secondaryButton: .cancel(Text("OK"), action: { showPiTraceDump = false })
+                )
             } else {
                 Alert(
                     title: Text("CLI Provider Management"),
@@ -185,6 +221,9 @@ struct CLIProvidersSettingsView: View {
                 showCodexTraceDump = false
                 showOpenCodeTraceDump = false
                 showCursorTraceDump = false
+                showDroidTraceDump = false
+                showJunieTraceDump = false
+                showPiTraceDump = false
             }
         }
     }
@@ -368,6 +407,15 @@ struct CLIProvidersSettingsView: View {
             return level.autoApprovesACPToolPermissions
                 ? "ACP auto-approve: on"
                 : "ACP auto-approve: off"
+        case .droid:
+            let level = DroidAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: secureStore)
+            return "ACP session mode: \(level.displayName)"
+        case .junie:
+            let level = JunieAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: secureStore)
+            return "ACP session mode: \(level.displayName)"
+        case .pi:
+            let level = PiAgentToolPreferences.permissionLevel(defaults: defaults, secureStore: secureStore)
+            return "ACP session mode: \(level.displayName)"
         }
     }
 
@@ -434,7 +482,7 @@ struct CLIProvidersSettingsView: View {
             } else {
                 permissionControlsUnavailableRow()
             }
-        case .openCode, .cursor:
+        case .openCode, .cursor, .droid, .junie, .pi:
             EmptyView()
         }
     }
@@ -1847,6 +1895,243 @@ struct CLIProvidersSettingsView: View {
         }
     }
 
+    // MARK: - Droid Card
+
+    private var droidCard: some View {
+        providerCard(
+            title: "Droid CLI",
+            subtitle: "Uses Droid's ACP runtime for Agent Mode, headless tasks, and chat. RepoPrompt MCP tools are added only for agent/headless runs.",
+            infoURL: "https://docs.factory.ai/cli/getting-started/overview",
+            isConnected: viewModel.isDroidConnected,
+            isExpanded: $isDroidExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                if viewModel.isDroidConnected {
+                    HStack(spacing: 8) {
+                        Button(action: { testDroidConnection() }) {
+                            if isLoadingDroid {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right")
+                            }
+                        }
+                        .disabled(isLoadingDroid)
+                        .buttonStyle(CustomButtonStyle())
+
+                        Spacer()
+
+                        Button(action: { signOutFromDroid() }) {
+                            Text("Sign Out")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(CustomButtonStyle())
+                    }
+
+                    Text(droidModelSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    permissionSummaryLinkRow(for: .droid)
+                } else {
+                    HStack(spacing: 10) {
+                        Button(action: { testDroidConnection() }) {
+                            if isLoadingDroid {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
+                        .disabled(isLoadingDroid)
+                        .buttonStyle(CustomButtonStyle())
+
+                        if let error = viewModel.droidError, !error.isEmpty {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Run `droid auth login` in your terminal to authenticate.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var droidModelSummary: String {
+        let options = viewModel.availableDroidModelOptions
+        let count = options.count
+        if count == 0 {
+            return "Model discovery will refresh in the background."
+        }
+        return count == 1 ? "1 model discovered." : "\(count) models discovered."
+    }
+
+    // MARK: - Junie Card
+
+    private var junieCard: some View {
+        providerCard(
+            title: "Junie CLI",
+            subtitle: "Uses JetBrains Junie's native ACP runtime for Agent Mode and headless tasks. RepoPrompt MCP tools are injected through ACP session configuration.",
+            infoURL: "https://junie.jetbrains.com/docs/junie-cli.html",
+            isConnected: viewModel.isJunieConnected,
+            isExpanded: $isJunieExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                if viewModel.isJunieConnected {
+                    HStack(spacing: 8) {
+                        Button(action: { testJunieConnection() }) {
+                            if isLoadingJunie {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right")
+                            }
+                        }
+                        .disabled(isLoadingJunie)
+                        .buttonStyle(CustomButtonStyle())
+
+                        Spacer()
+
+                        Button(action: { signOutFromJunie() }) {
+                            Text("Sign Out")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(CustomButtonStyle())
+                    }
+
+                    Text(junieModelSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    permissionSummaryLinkRow(for: .junie)
+                } else {
+                    HStack(spacing: 10) {
+                        Button(action: { testJunieConnection() }) {
+                            if isLoadingJunie {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
+                        .disabled(isLoadingJunie)
+                        .buttonStyle(CustomButtonStyle())
+
+                        if let error = viewModel.junieError, !error.isEmpty {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Run `junie --auth <token>` or set `JUNIE_API_KEY` to authenticate.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var junieModelSummary: String {
+        let options = viewModel.availableJunieModelOptions
+        let count = options.count
+        if count == 0 {
+            return "Model discovery will refresh in the background."
+        }
+        return count == 1 ? "1 model discovered." : "\(count) models discovered."
+    }
+
+    // MARK: - Pi Card
+
+    private var piCard: some View {
+        providerCard(
+            title: "Pi CLI",
+            subtitle: "Bridges the `pi` coding agent through the `pi-acp` adapter for Agent Mode and headless tasks. RepoPrompt MCP tools are injected through ACP session configuration.",
+            infoURL: "https://github.com/earendil-works/pi",
+            isConnected: viewModel.isPiConnected,
+            isExpanded: $isPiExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                if viewModel.isPiConnected {
+                    HStack(spacing: 8) {
+                        Button(action: { testPiConnection() }) {
+                            if isLoadingPi {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right")
+                            }
+                        }
+                        .disabled(isLoadingPi)
+                        .buttonStyle(CustomButtonStyle())
+
+                        Spacer()
+
+                        Button(action: { signOutFromPi() }) {
+                            Text("Sign Out")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(CustomButtonStyle())
+                    }
+
+                    Text(piModelSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    permissionSummaryLinkRow(for: .pi)
+                } else {
+                    HStack(spacing: 10) {
+                        Button(action: { testPiConnection() }) {
+                            if isLoadingPi {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(height: 16)
+                            } else {
+                                Label("Connect", systemImage: "link")
+                            }
+                        }
+                        .disabled(isLoadingPi)
+                        .buttonStyle(CustomButtonStyle())
+
+                        if let error = viewModel.piError, !error.isEmpty {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Install `pi` and `pi-acp` (npm), then run `pi-acp --terminal-login` to authenticate.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var piModelSummary: String {
+        let options = viewModel.availablePiModelOptions
+        let count = options.count
+        if count == 0 {
+            return "Model discovery will refresh in the background."
+        }
+        return count == 1 ? "1 model discovered." : "\(count) models discovered."
+    }
+
     private var cursorModelSummary: String {
         let options = viewModel.availableCursorModelOptions
         let count = options.count
@@ -2248,6 +2533,162 @@ struct CLIProvidersSettingsView: View {
         viewModel.disconnectCursor()
         alertMessage = "Signed out from Cursor CLI"
         showCursorTraceDump = false
+        showAlert = true
+        onAPIKeyUpdated?()
+    }
+
+    private func testDroidConnection() {
+        isLoadingDroid = true
+        Task {
+            do {
+                let ok = try await viewModel.testDroidConnection()
+                await MainActor.run {
+                    isLoadingDroid = false
+                    if ok {
+                        let modelSummary = droidModelSummary.lowercased()
+                        alertMessage = "Droid CLI connected. \(modelSummary)"
+                        showDroidTraceDump = false
+                    }
+                    showAlert = true
+                    onAPIKeyUpdated?()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingDroid = false
+                    alertMessage = viewModel.droidError ?? error.asFriendlyString()
+                    showDroidTraceDump = viewModel.hasDroidTrace()
+                    showAlert = true
+                }
+            }
+        }
+    }
+
+    private func dumpDroidTrace() {
+        do {
+            let url = try viewModel.dumpDroidTrace()
+            alertMessage = "Trace saved to Downloads/\(url.lastPathComponent)."
+        } catch let error as CLIProcessLogCollectorError {
+            switch error {
+            case .noEntries:
+                alertMessage = "No trace data is available to export yet."
+            case .downloadsDirectoryUnavailable:
+                alertMessage = "Unable to locate the Downloads folder."
+            }
+        } catch {
+            alertMessage = "Failed to export trace: \(error.localizedDescription)"
+        }
+        showDroidTraceDump = false
+        showAlert = true
+    }
+
+    private func signOutFromDroid() {
+        viewModel.disconnectDroid()
+        alertMessage = "Signed out from Droid CLI"
+        showDroidTraceDump = false
+        showAlert = true
+        onAPIKeyUpdated?()
+    }
+
+    private func testJunieConnection() {
+        isLoadingJunie = true
+        Task {
+            do {
+                let ok = try await viewModel.testJunieConnection()
+                await MainActor.run {
+                    isLoadingJunie = false
+                    if ok {
+                        let modelSummary = junieModelSummary.lowercased()
+                        alertMessage = "Junie CLI connected. \(modelSummary)"
+                        showJunieTraceDump = false
+                    }
+                    showAlert = true
+                    onAPIKeyUpdated?()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingJunie = false
+                    alertMessage = viewModel.junieError ?? error.asFriendlyString()
+                    showJunieTraceDump = viewModel.hasJunieTrace()
+                    showAlert = true
+                }
+            }
+        }
+    }
+
+    private func dumpJunieTrace() {
+        do {
+            let url = try viewModel.dumpJunieTrace()
+            alertMessage = "Trace saved to Downloads/\(url.lastPathComponent)."
+        } catch let error as CLIProcessLogCollectorError {
+            switch error {
+            case .noEntries:
+                alertMessage = "No trace data is available to export yet."
+            case .downloadsDirectoryUnavailable:
+                alertMessage = "Unable to locate the Downloads folder."
+            }
+        } catch {
+            alertMessage = "Failed to export trace: \(error.localizedDescription)"
+        }
+        showJunieTraceDump = false
+        showAlert = true
+    }
+
+    private func signOutFromJunie() {
+        viewModel.disconnectJunie()
+        alertMessage = "Signed out from Junie CLI"
+        showJunieTraceDump = false
+        showAlert = true
+        onAPIKeyUpdated?()
+    }
+
+    private func testPiConnection() {
+        isLoadingPi = true
+        Task {
+            do {
+                let ok = try await viewModel.testPiConnection()
+                await MainActor.run {
+                    isLoadingPi = false
+                    if ok {
+                        let modelSummary = piModelSummary.lowercased()
+                        alertMessage = "Pi CLI connected. \(modelSummary)"
+                        showPiTraceDump = false
+                    }
+                    showAlert = true
+                    onAPIKeyUpdated?()
+                }
+            } catch {
+                await MainActor.run {
+                    isLoadingPi = false
+                    alertMessage = viewModel.piError ?? error.asFriendlyString()
+                    showPiTraceDump = viewModel.hasPiTrace()
+                    showAlert = true
+                }
+            }
+        }
+    }
+
+    private func dumpPiTrace() {
+        do {
+            let url = try viewModel.dumpPiTrace()
+            alertMessage = "Trace saved to Downloads/\(url.lastPathComponent)."
+        } catch let error as CLIProcessLogCollectorError {
+            switch error {
+            case .noEntries:
+                alertMessage = "No trace data is available to export yet."
+            case .downloadsDirectoryUnavailable:
+                alertMessage = "Unable to locate the Downloads folder."
+            }
+        } catch {
+            alertMessage = "Failed to export trace: \(error.localizedDescription)"
+        }
+        showPiTraceDump = false
+        showAlert = true
+    }
+
+    private func signOutFromPi() {
+        viewModel.disconnectPi()
+        alertMessage = "Signed out from Pi CLI"
+        showPiTraceDump = false
         showAlert = true
         onAPIKeyUpdated?()
     }

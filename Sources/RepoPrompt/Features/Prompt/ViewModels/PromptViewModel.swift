@@ -5098,6 +5098,12 @@ class PromptViewModel: ObservableObject {
             return api.isCodexConnected
         case .openCode:
             return api.isOpenCodeConnected
+        case .droid:
+            return api.isDroidConnected
+        case .junie:
+            return api.isJunieConnected
+        case .pi:
+            return api.isPiConnected
         case .cursor:
             return api.isCursorConnected
         }

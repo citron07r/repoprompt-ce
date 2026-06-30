@@ -20,6 +20,9 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case codexCLIAPI
     case openCodeCLIAPI
     case cursorCLIAPI
+    case droidCLIAPI
+    case junieCLIAPI
+    case piCLIAPI
     case zAIAPI
 
     // Claude-compatible backend accounts.
@@ -32,6 +35,9 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case agentPermissionClaudeDocument
     case agentPermissionOpenCodeDocument
     case agentPermissionCursorDocument
+    case agentPermissionDroidDocument
+    case agentPermissionJunieDocument
+    case agentPermissionPiDocument
 
     var identifier: String {
         switch self {
@@ -65,6 +71,12 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
             "OpenCodeCLIAPI"
         case .cursorCLIAPI:
             "CursorCLIAPI"
+        case .droidCLIAPI:
+            "DroidCLIAPI"
+        case .junieCLIAPI:
+            "JunieCLIAPI"
+        case .piCLIAPI:
+            "PiCLIAPI"
         case .zAIAPI:
             "ZAIAPI"
         case .claudeCompatibleKimiAPIKey:
@@ -96,6 +108,21 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
                 40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
                 51, 53, 52, 41, 116, 57, 47, 40, 41, 53, 40, 116, 44, 107
             ])
+        case .agentPermissionDroidDocument:
+            Self.decode([
+                40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
+                51, 53, 52, 41, 116, 62, 40, 53, 51, 62, 116, 44, 107
+            ])
+        case .agentPermissionJunieDocument:
+            Self.decode([
+                40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
+                51, 53, 52, 41, 116, 48, 47, 52, 51, 63, 116, 44, 107
+            ])
+        case .agentPermissionPiDocument:
+            Self.decode([
+                40, 42, 116, 59, 61, 63, 52, 46, 116, 42, 63, 40, 55, 51, 41, 41,
+                51, 53, 52, 41, 116, 42, 51, 116, 44, 107
+            ])
         }
     }
 
@@ -120,6 +147,9 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
         case .codexCLIAPI: "Codex CLI API key"
         case .openCodeCLIAPI: "OpenCode CLI API key"
         case .cursorCLIAPI: "Cursor CLI API key"
+        case .droidCLIAPI: "Droid CLI API key"
+        case .junieCLIAPI: "Junie CLI API key"
+        case .piCLIAPI: "Pi CLI API key"
         case .zAIAPI: "Z.AI API key"
         case .claudeCompatibleKimiAPIKey: "Kimi compatible API key"
         case .claudeCompatibleCustomAPIKey: "Custom Claude-compatible API key"
@@ -128,6 +158,9 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
         case .agentPermissionClaudeDocument: "Claude permissions"
         case .agentPermissionOpenCodeDocument: "OpenCode permissions"
         case .agentPermissionCursorDocument: "Cursor permissions"
+        case .agentPermissionDroidDocument: "Droid permissions"
+        case .agentPermissionJunieDocument: "Junie permissions"
+        case .agentPermissionPiDocument: "Pi permissions"
         }
     }
 
@@ -153,6 +186,9 @@ enum SecureStorageAccountCatalog {
         .codexCLIAPI,
         .openCodeCLIAPI,
         .cursorCLIAPI,
+        .droidCLIAPI,
+        .junieCLIAPI,
+        .piCLIAPI,
         .zAIAPI
     ]
 
@@ -167,7 +203,10 @@ enum SecureStorageAccountCatalog {
         .agentPermissionCodexDocument,
         .agentPermissionClaudeDocument,
         .agentPermissionOpenCodeDocument,
-        .agentPermissionCursorDocument
+        .agentPermissionCursorDocument,
+        .agentPermissionDroidDocument,
+        .agentPermissionJunieDocument,
+        .agentPermissionPiDocument
     ]
 
     static let allAccounts = SecureStorageAccount.allCases

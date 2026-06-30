@@ -223,6 +223,27 @@ final class AgentModeProviderBindingService {
                         updateActiveBindings(session)
                     }
                 }
+            case .droid, .junie, .pi:
+                let runtime = runtimePermission(for: session.selectedAgent, profile: session.permissionProfile)
+                guard let sessionModeID = runtime.acpSessionModeID,
+                      session.runState.isActive,
+                      let controller = session.acpController else { continue }
+                Task { @MainActor in
+                    let providerName = session.selectedAgent.displayName
+                    if AgentRuntimeProviderService.enableDebugLogging { print("[ACP-Runner] tab=\(session.tabID) applying \(providerName) session mode=\(sessionModeID)") }
+                    do {
+                        await controller.setAutoApproveAllToolPermissions(runtime.autoApproveAllACPToolPermissions)
+                        try await controller.setSessionMode(sessionModeID)
+                        if runtime.acceptsPendingACPApprovalWhenActivated, let pendingApproval = session.pendingApproval {
+                            await controller.respondToPermissionRequest(id: pendingApproval.requestID.displayValue, decision: .acceptForSession)
+                        }
+                    } catch {
+                        if AgentRuntimeProviderService.enableDebugLogging { print("[ACP-Runner] tab=\(session.tabID) failed to apply \(providerName) session mode=\(sessionModeID) error=\(error.localizedDescription)") }
+                    }
+                    if session.tabID == currentTabID {
+                        updateActiveBindings(session)
+                    }
+                }
             }
         }
 
