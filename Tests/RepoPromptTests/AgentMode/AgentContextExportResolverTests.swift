@@ -49,7 +49,8 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(summary.fullFileCount, 1)
         XCTAssertEqual(summary.slicedFileCount, 1)
         XCTAssertEqual(summary.sliceRangeCount, 2)
-        XCTAssertEqual(summary.headlineText, "2 files · 1 sliced · 2 ranges")
+        XCTAssertEqual(summary.compactText, "2 files")
+        XCTAssertEqual(summary.headlineText, "2 files · 2 slices")
     }
 
     func testSelectionSummaryIncludesLegacySliceOnlyKey() {
@@ -64,7 +65,8 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(summary.fullFileCount, 0)
         XCTAssertEqual(summary.slicedFileCount, 1)
         XCTAssertEqual(summary.sliceRangeCount, 1)
-        XCTAssertEqual(summary.headlineText, "1 file · 1 sliced · 1 range")
+        XCTAssertEqual(summary.compactText, "1 file")
+        XCTAssertEqual(summary.headlineText, "1 file · 1 slice")
     }
 
     func testSelectionSummaryDeduplicatesSelectedPathWithSlices() {
@@ -94,6 +96,7 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(summary.fullFileCount, 0)
         XCTAssertEqual(summary.slicedFileCount, 0)
         XCTAssertEqual(summary.sliceRangeCount, 0)
+        XCTAssertEqual(summary.compactText, "0 files")
         XCTAssertEqual(summary.headlineText, "0 files")
     }
 
@@ -105,7 +108,9 @@ final class AgentContextExportResolverTests: XCTestCase {
             for: StoredSelection(selectedPaths: ["One.swift", "Two.swift"], codemapAutoEnabled: false)
         )
 
+        XCTAssertEqual(singular.compactText, "1 file")
         XCTAssertEqual(singular.headlineText, "1 file")
+        XCTAssertEqual(plural.compactText, "2 files")
         XCTAssertEqual(plural.headlineText, "2 files")
     }
 
@@ -127,10 +132,11 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(summary.fullFileCount, 0)
         XCTAssertEqual(summary.slicedFileCount, 1)
         XCTAssertEqual(summary.sliceRangeCount, 3)
-        XCTAssertEqual(summary.headlineText, "1 file · 1 sliced · 3 ranges")
+        XCTAssertEqual(summary.compactText, "1 file")
+        XCTAssertEqual(summary.headlineText, "1 file · 3 slices")
     }
 
-    func testNonGitAutomaticExportPreservesSelectedRowsWithoutRuntimeOrLegacyFallback() async throws {
+    func testNonGitAutomaticExportBatchesSelectedPathLookupsWithoutRuntimeFallback() async throws {
         #if DEBUG
             let root = try makeTemporaryRoot(name: "AgentExportNonGitAuto")
             let explicitFileCount = 7
@@ -207,7 +213,46 @@ final class AgentContextExportResolverTests: XCTestCase {
                 explicitFileCount
             )
             XCTAssertEqual(snapshotBuildCount, 1)
+            XCTAssertLessThan(snapshotBuildCount, explicitFileCount)
             XCTAssertEqual(capture.droppedSampleCount, 0)
+        #endif
+    }
+
+    func testSelectedFilesModelWithoutCodemapsDoesNotEnumerateWholeRoots() async throws {
+        #if DEBUG
+            let root = try makeTemporaryRoot(name: "AgentExportNoBroadEnumeration")
+            let selectedURL = root.appendingPathComponent("Sources/Feature/Selected.swift")
+            try write("struct Selected {}", to: selectedURL)
+            for index in 0 ..< 80 {
+                try write(
+                    "struct Bystander\(index) {}",
+                    to: root.appendingPathComponent("Sources/Generated/Level\(index % 8)/Nested\(index)/Bystander\(index).swift")
+                )
+            }
+
+            let store = WorkspaceFileContextStore()
+            _ = try await store.loadRoot(path: root.path)
+            await store.resetFilesInRootRequestCountForTesting()
+            let source = AgentContextExportSource(
+                tabID: UUID(),
+                promptText: "Review",
+                selection: StoredSelection(selectedPaths: [selectedURL.path], codemapAutoEnabled: false),
+                selectedMetaPromptIDs: [],
+                tabName: "Agent Tab",
+                activeAgentSessionID: nil,
+                worktreeBindings: []
+            )
+
+            let model = await AgentContextExportResolver.resolveModel(
+                source: source,
+                store: store,
+                filePathDisplay: .relative,
+                codeMapUsage: .none
+            )
+
+            XCTAssertEqual(model.rows.map(\.displayPath), ["Sources/Feature/Selected.swift"])
+            let filesInRootRequestCount = await store.fileEnumerationRequestCountForTesting()
+            XCTAssertEqual(filesInRootRequestCount, 0)
         #endif
     }
 
@@ -228,7 +273,9 @@ final class AgentContextExportResolverTests: XCTestCase {
 
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertEqual(model.rows.count, 1)
+        XCTAssertFalse(try XCTUnwrap(model.lookupContext.bindingProjection).isFullyMaterialized)
         XCTAssertEqual(row.displayPath, "Sources/App.swift")
+        XCTAssertEqual(row.directContentPath, fixture.worktreeRoot.appendingPathComponent("Sources/App.swift").standardizedFileURL.path)
 
         let previewText = await AgentContextExportResolver.loadRowContent(
             for: row,
@@ -261,6 +308,84 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertTrue(clipboard.contains("Sources/App.swift"), clipboard)
         XCTAssertTrue(clipboard.contains("let origin = \"worktree\""), clipboard)
         XCTAssertFalse(clipboard.contains("let origin = \"base\""), clipboard)
+    }
+
+    func testBoundWorktreeAutoCodemapDoesNotUseMetadataOnlyFastPathWhenAutoCodemapEnabled() async throws {
+        let fixture = try await makeBoundFixture()
+        _ = try await fixture.store.loadRoot(path: fixture.worktreeRoot.path)
+        let source = makeSource(
+            logicalRoot: fixture.logicalRoot,
+            worktreeRoot: fixture.worktreeRoot,
+            selection: StoredSelection(selectedPaths: ["Sources/App.swift"], codemapAutoEnabled: true)
+        )
+
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: fixture.store,
+            filePathDisplay: .relative,
+            codeMapUsage: .auto
+        )
+
+        XCTAssertEqual(model.rows.first?.displayPath, "Sources/App.swift")
+        XCTAssertTrue(model.rows.allSatisfy { $0.directContentPath == nil })
+    }
+
+    func testMetadataOnlyWorktreeExportDoesNotDirectReadSymlinkEscapingRoot() async throws {
+        let fixture = try await makeBoundFixture()
+        let externalRoot = try makeTemporaryRoot(name: "AgentExportExternal")
+        let externalFile = externalRoot.appendingPathComponent("Secret.swift")
+        let symlink = fixture.worktreeRoot.appendingPathComponent("Sources/Linked.swift")
+        try write("let secret = true\n", to: externalFile)
+        try FileManager.default.createSymbolicLink(
+            at: symlink,
+            withDestinationURL: externalFile
+        )
+        let source = makeSource(
+            logicalRoot: fixture.logicalRoot,
+            worktreeRoot: fixture.worktreeRoot,
+            selection: StoredSelection(selectedPaths: ["Sources/Linked.swift"], codemapAutoEnabled: false)
+        )
+
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: fixture.store,
+            filePathDisplay: .relative,
+            codeMapUsage: .none
+        )
+
+        XCTAssertFalse(model.lookupContext.bindingProjection?.isFullyMaterialized == false)
+        XCTAssertTrue(model.rows.allSatisfy { $0.directContentPath == nil })
+        if let row = model.rows.first {
+            let previewText = await AgentContextExportResolver.loadRowContent(
+                for: row,
+                model: model,
+                store: fixture.store,
+                purpose: .preview
+            )
+            XCTAssertNotEqual(previewText, "let secret = true\n")
+        }
+    }
+
+    func testEmptyBoundExportSkipsWorktreeProjection() async throws {
+        let fixture = try await makeBoundFixture()
+        let source = makeSource(
+            logicalRoot: fixture.logicalRoot,
+            worktreeRoot: fixture.worktreeRoot,
+            selection: StoredSelection(codemapAutoEnabled: false)
+        )
+
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: fixture.store,
+            filePathDisplay: .relative,
+            codeMapUsage: .none
+        )
+
+        XCTAssertTrue(model.rows.isEmpty)
+        XCTAssertTrue(model.missingPaths.isEmpty)
+        XCTAssertTrue(model.invalidPaths.isEmpty)
+        XCTAssertNil(model.lookupContext.bindingProjection)
+        XCTAssertEqual(model.lookupContext.rootScope, .visibleWorkspace)
     }
 
     func testWorktreeSelectedCodemapUsesFrozenLogicalPresentationWithoutPhysicalLeak() async throws {
@@ -1013,6 +1138,46 @@ final class AgentContextExportResolverTests: XCTestCase {
         XCTAssertEqual(previewResult, content)
         XCTAssertEqual(copyResult, content)
         XCTAssertFalse(previewResult?.contains("Preview truncated") ?? true)
+    }
+
+    func testEmptyDirectFilePreviewReturnsEmptyContent() async throws {
+        let root = try makeTemporaryRoot(name: "AgentExportPreviewEmpty")
+        try write("", to: root.appendingPathComponent("Sources/Empty.swift"))
+
+        let store = WorkspaceFileContextStore()
+        _ = try await store.loadRoot(path: root.path)
+        let source = AgentContextExportSource(
+            tabID: UUID(),
+            promptText: "Review",
+            selection: StoredSelection(selectedPaths: ["Sources/Empty.swift"], codemapAutoEnabled: false),
+            selectedMetaPromptIDs: [],
+            tabName: "Agent Tab",
+            activeAgentSessionID: nil,
+            worktreeBindings: []
+        )
+        let model = await AgentContextExportResolver.resolveModel(
+            source: source,
+            store: store,
+            filePathDisplay: .relative,
+            codeMapUsage: .none
+        )
+        let row = try XCTUnwrap(model.rows.first)
+
+        let previewResult = await AgentContextExportResolver.loadRowContent(
+            for: row,
+            model: model,
+            store: store,
+            purpose: .preview
+        )
+        let copyResult = await AgentContextExportResolver.loadRowContent(
+            for: row,
+            model: model,
+            store: store,
+            purpose: .copy
+        )
+
+        XCTAssertEqual(previewResult, "")
+        XCTAssertEqual(copyResult, "")
     }
 
     private func makeBoundFixture() async throws -> (logicalRoot: URL, worktreeRoot: URL, store: WorkspaceFileContextStore) {
