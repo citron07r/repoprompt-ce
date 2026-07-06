@@ -1002,6 +1002,83 @@ final class AgentRunWorktreeStartTests: AgentRunWorktreeStartGitSeedTestCase {
         XCTAssertNil(pollObject["worktree_bindings"])
     }
 
+    func testAgentRunStartInheritsRoutedWorktreeFromUIParentWithoutMCPControlContext() async throws {
+        let root = try makeTemporaryDirectory(named: "ui-routed-root")
+        let worktree = try makeTemporaryDirectory(named: "ui-routed-worktree")
+        let window = try await makeWindow(root: root)
+        let viewModel = window.agentModeViewModel
+        let sourceTabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let parentID = UUID()
+        let parentBinding = makeBinding(logicalRoot: root.path, worktreeRoot: worktree.path)
+        let source = viewModel.session(for: sourceTabID)
+        source.testInstallPersistentSessionBinding(sessionID: parentID)
+        source.hasLoadedPersistedState = true
+        source.worktreeBindings = [parentBinding]
+        source.mcpControlContext = nil
+        source.isMCPOriginated = false
+
+        let service = makeAgentRunStartService(window: window, sourceTabID: sourceTabID)
+        let value = try await service.execute(args: [
+            "op": .string("start"),
+            "message": .string("inherit routed UI worktree"),
+            "detach": .bool(true),
+            "timeout": .int(0)
+        ])
+
+        let object = try XCTUnwrap(value.objectValue)
+        let sessionObject = try XCTUnwrap(object["session"]?.objectValue)
+        let childSessionID = try XCTUnwrap(
+            try UUID(uuidString: XCTUnwrap(object["session_id"]?.stringValue))
+        )
+        let childTabID = try XCTUnwrap(
+            try UUID(uuidString: XCTUnwrap(sessionObject["context_id"]?.stringValue))
+        )
+        XCTAssertEqual(sessionObject["parent_session_id"]?.stringValue, parentID.uuidString)
+        let bindings = try XCTUnwrap(object["worktree_bindings"]?.arrayValue)
+        XCTAssertEqual(bindings.count, 1)
+        XCTAssertEqual(bindings.first?.objectValue?["worktree_root_path"]?.stringValue, worktree.path)
+
+        let child = viewModel.session(for: childTabID)
+        XCTAssertEqual(child.activeAgentSessionID, childSessionID)
+        XCTAssertEqual(child.parentSessionID, parentID)
+        XCTAssertEqual(child.worktreeBindings, [parentBinding])
+        XCTAssertEqual(try viewModel.effectiveWorkspacePath(for: child), worktree.path)
+    }
+
+    func testAgentRunStartRejectsMCPOriginatedRoutedWorktreeParentWithoutControlContext() async throws {
+        let root = try makeTemporaryDirectory(named: "mcp-routed-root")
+        let worktree = try makeTemporaryDirectory(named: "mcp-routed-worktree")
+        let window = try await makeWindow(root: root)
+        let viewModel = window.agentModeViewModel
+        let sourceTabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
+        let parentID = UUID()
+        let parentBinding = makeBinding(logicalRoot: root.path, worktreeRoot: worktree.path)
+        let source = viewModel.session(for: sourceTabID)
+        source.testInstallPersistentSessionBinding(sessionID: parentID)
+        source.hasLoadedPersistedState = true
+        source.worktreeBindings = [parentBinding]
+        source.mcpControlContext = nil
+        source.isMCPOriginated = true
+
+        let service = makeAgentRunStartService(window: window, sourceTabID: sourceTabID)
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("start"),
+                "message": .string("reject stale MCP-routed worktree"),
+                "detach": .bool(true),
+                "timeout": .int(0)
+            ])
+            XCTFail("Expected MCP-originated routed worktree inheritance to require a live control context.")
+        } catch {
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "agent_run.start routed source MCP control context is unavailable for worktree inheritance."
+                ),
+                "Unexpected error: \(error)"
+            )
+        }
+    }
+
     func testAgentRunAndExploreStartPreserveInheritanceOptOutAndTopLevelBehavior() async throws {
         let root = try makeTemporaryDirectory(named: "root")
         let worktree = try makeTemporaryDirectory(named: "worktree")
